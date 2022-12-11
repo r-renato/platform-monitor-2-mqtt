@@ -1,0 +1,24 @@
+# Editors
+.vscode/
+
+# Mac/OSX
+.DS_Store
+
+# Source for the following rules: https://raw.githubusercontent.com/github/gitignore/master/Python.gitignore
+# Byte-compiled / optimized / DLL files
+__pycache__/
+mods/__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Custom deploy for test only
+deploy.sh
