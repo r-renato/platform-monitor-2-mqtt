@@ -38,7 +38,7 @@ class KeepalivedMon:
         localDict = {}
         
         key = 'keepalived_version'
-        command = self._docker_cmd + " --version"
+        command = self._keepalived_cmd + " --version"
         response = self._getDataFromSubprocess( command ).split("\n")   
         splittedLine = response[0].lstrip().rstrip().split() 
         
