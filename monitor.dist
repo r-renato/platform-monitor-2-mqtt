@@ -10,6 +10,7 @@
 operative_system=gen_linux_os,GenericLinuxOS
 device=rpi_device,RPIDevice
 docker=docker_mon,DocketMon
+keepalived=keepalived_mon,KeepalivedMon
 
 [MQTT]
 # The hostname or IP address of the MQTT broker to connect to (Default: localhost)
