@@ -22,3 +22,4 @@ venv.bak/
 
 # Custom deploy for test only
 deploy.sh
+monitor.ini
