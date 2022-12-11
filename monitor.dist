@@ -1,0 +1,89 @@
+
+[General]
+# default domain to use when hostname -f doesn't return a proper fqdn
+#fallback_domain = home
+
+# save_json = true
+
+[Modules]
+# 
+operative_system=gen_linux_os,GenericLinuxOS
+device=rpi_device,RPIDevice
+docker=docker_mon,DocketMon
+
+[MQTT]
+# The hostname or IP address of the MQTT broker to connect to (Default: localhost)
+# Also read from the MQTT_HOSTNAME environment variable
+#hostname = localhost
+
+# The TCP port the MQTT broker is listening on (Default: 1883)
+# Also read from the MQTT_PORT environment variable
+#port = 1883
+
+# The MQTT broker authentification credentials (Default: no authentication)
+# Will also read from MQTT_USERNAME and MQTT_PASSWORD environment variables
+#username = user
+#password = pwd123
+
+# Enable TLS/SSL on the connection
+#tls = false
+
+# Path to CA Certificate file to verify host
+#tls_ca_cert =
+
+# Path to TLS client auth key file
+#tls_keyfile =
+
+# Path to TLS client auth certificate file
+#tls_certfile =
+
+# Maximum period in seconds between ping messages to the broker. (Default: 60)
+#keepalive = 60
+
+[MQTT topic]
+# NOTE: The MQTT topic used for this device is constructed as:
+#  {base_topic}/{sensor_name}
+#
+# The MQTT base topic under which to publish the Raspberry Pi sensor data topics.
+#base_topic = home/nodes
+
+# The MQTT name for this Raspberry Pi as a sensor
+#sensor_name = rpi-{hostname}
+
+[Daemon]
+# Enable or Disable an endless execution loop (Default: true)
+#enabled = true
+
+# This script reports RPi values at a fixed interval in minutes [2-30], [Default: 5]
+#interval_in_minutes = 5
+
+[Logger sessions]
+# 
+    [loggers]
+    keys=root,platformMonitor
+
+    [handlers]
+    keys=consoleHandler
+
+    [formatters]
+    keys=simpleFormatter
+
+    [logger_root]
+    level=DEBUG
+    handlers=consoleHandler
+
+    [logger_platformMonitor]
+    level=INFO
+    handlers=consoleHandler
+    qualname=platformMonitor
+    propagate=0
+
+    [handler_consoleHandler]
+    class=StreamHandler
+    #level=INFO
+    formatter=simpleFormatter
+    args=(sys.stdout,)
+
+    [formatter_simpleFormatter]
+    format=%(asctime)s - %(name)s - %(levelname)s - %(message)s
+    
