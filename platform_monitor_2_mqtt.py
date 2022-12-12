@@ -11,6 +11,7 @@ from configparser import ConfigParser
 import logging
 import logging.config
 from time import sleep
+import sdnotify
 
 import paho.mqtt.client as mqtt
 
@@ -236,7 +237,7 @@ if __name__ == "__main__":
     # json_object = json.dumps( collectedData, indent = 4)
     # print(json_object)
     
-
+    sd_notifier = sdnotify.SystemdNotifier()
 
     # now just hang in forever loop until script is stopped externally
     daemon_enabled = config['Daemon'].getboolean('enabled', True)
@@ -252,6 +253,7 @@ if __name__ == "__main__":
         if not opt_test and daemon_enabled:
             logger.info( "Run as daemon")
             monitor2MQTT.start()
+            sd_notifier.notify('READY=1')
             while not opt_test and daemon_enabled:
                 #  our INTERVAL timer does the work
                 sleep(10000)
