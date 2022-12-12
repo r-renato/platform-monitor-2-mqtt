@@ -101,27 +101,3 @@ class GenericLinuxOS:
                 
         return( localDict )  
         
-    def _getUptimeo(self):
-        localDict = {}
-        out = subprocess.Popen("/usr/bin/uptime",
-                            shell=True,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT)
-        stdout, _ = out.communicate()
-        rpi_uptime_raw = stdout.decode('utf-8').rstrip().lstrip()
-        localDict['rpi_uptime_raw'] = rpi_uptime_raw
-        # print_line('rpi_uptime_raw=[{}]'.format(rpi_uptime_raw), debug=True)
-        basicParts = rpi_uptime_raw.split()
-        timeStamp = basicParts[0]
-        lineParts = rpi_uptime_raw.split(',')
-        if('user' in lineParts[1]):
-            rpi_uptime_raw = lineParts[0]
-        else:
-            rpi_uptime_raw = '{}, {}'.format(lineParts[0], lineParts[1])
-        rpi_uptime = rpi_uptime_raw.replace(
-            timeStamp, '').lstrip().replace('up ', '')
-        localDict['rpi_uptime'] = rpi_uptime
-        # print_line('rpi_uptime=[{}]'.format(rpi_uptime), debug=True) 
-        return( localDict )   
-    
-    

@@ -62,7 +62,7 @@ class RPIDevice:
         
         key = 'ram_total_mb'
         command = "free --mega | grep 'Mem:' | cut -d: -f2 | awk '{ print $1}'"
-        localDict[ key ] = int( self._getDataFromSubprocess( command ).lstrip() )  
+        localDict[ key ] = self.next_power_of_2(int( self._getDataFromSubprocess( command ).lstrip() ))*1024
         
         return( localDict )
     
