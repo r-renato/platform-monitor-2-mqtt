@@ -50,7 +50,7 @@ class DocketMon:
         localDict = {}
         
         key = 'docker_version'
-        command = self._docker_cmd + " images -a | tail -n +2"
+        command = "sudo " + self._docker_cmd + " images -a | tail -n +2"
         imagesResponse = self._getDataFromSubprocess( command ).split("\n")        
         
         for currLine in imagesResponse:
