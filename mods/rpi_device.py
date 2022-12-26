@@ -300,16 +300,16 @@ class RPIDevice:
         response = self._getDataFromSubprocess( command )
         lineParts = response.split()
 
-        localDict['normal_processes_user_mode'] = int(lineParts[ 0 ])
-        localDict['nice_processes_user_mode'] = int(lineParts[ 1 ])
-        localDict['system_processes_kernel_mode'] = int(lineParts[ 2 ])
-        localDict['idle_processes'] = int(lineParts[ 3 ])
-        localDict['iowait_processes'] = int(lineParts[ 4 ])
-        localDict['irq_processes'] = int(lineParts[ 5 ])
-        localDict['softirq_processes'] = int(lineParts[ 6 ])
-        localDict['steal_processes'] = int(lineParts[ 7 ])
-        localDict['guest_processes'] = int(lineParts[ 8 ])
-        localDict['guest_nice_processes'] = int(lineParts[ 9 ])
+        localDict['normal_processes_user_mode'] = int(lineParts[ 1 ])
+        localDict['nice_processes_user_mode'] = int(lineParts[ 2 ])
+        localDict['system_processes_kernel_mode'] = int(lineParts[ 3 ])
+        localDict['idle_processes'] = int(lineParts[ 4 ])
+        localDict['iowait_processes'] = int(lineParts[ 5 ])
+        localDict['irq_processes'] = int(lineParts[ 6 ])
+        localDict['softirq_processes'] = int(lineParts[ 7 ])
+        localDict['steal_processes'] = int(lineParts[ 8 ])
+        localDict['guest_processes'] = int(lineParts[ 9 ])
+        localDict['guest_nice_processes'] = int(lineParts[ 10 ])
         
         total: int = localDict['normal_processes_user_mode'] 
         + localDict['nice_processes_user_mode']
