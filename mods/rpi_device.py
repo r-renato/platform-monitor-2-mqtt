@@ -311,13 +311,7 @@ class RPIDevice:
         localDict['guest_processes'] = int(lineParts[ 9 ])
         localDict['guest_nice_processes'] = int(lineParts[ 10 ])
         
-        total = localDict['normal_processes_user_mode'] 
-        + localDict['nice_processes_user_mode']
-        + localDict['system_processes_kernel_mode']
-        + localDict['idle_processes']
-        + localDict['iowait_processes']
-        + localDict['irq_processes']
-        + localDict['softirq_processes']
+        total = localDict['normal_processes_user_mode'] + localDict['nice_processes_user_mode'] + localDict['system_processes_kernel_mode'] + localDict['idle_processes'] + localDict['iowait_processes'] + localDict['irq_processes'] + localDict['softirq_processes']
         
         localDict['average_idle_percentage'] = (localDict['idle_processes'] * 100 ) / total
         
