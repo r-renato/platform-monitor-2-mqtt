@@ -313,8 +313,8 @@ class RPIDevice:
         
         total = localDict['normal_processes_user_mode'] + localDict['nice_processes_user_mode'] + localDict['system_processes_kernel_mode'] + localDict['idle_processes'] + localDict['iowait_processes'] + localDict['irq_processes'] + localDict['softirq_processes']
         
-        localDict['average_idle_percentage'] = (localDict['idle_processes'] * 100 ) / total
+        localDict['average_idle_percentage'] = round((localDict['idle_processes'] * 100 ) / total, 1)
         
-        self._logger.debug('CPU idle [{}] total [{}] [{}]'.format(localDict['idle_processes'] * 100, total, (localDict['idle_processes'] * 100 ) / total))
+        # self._logger.debug('CPU idle [{}] total [{}] [{}]'.format(localDict['idle_processes'] * 100, total, (localDict['idle_processes'] * 100 ) / total))
         
         return( localDict )
