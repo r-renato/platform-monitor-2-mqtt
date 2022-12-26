@@ -321,4 +321,6 @@ class RPIDevice:
         
         localDict['average_idle_percentage'] = round((localDict['idle_processes'] * 100 ) / total, 1)
         
+        self._logger.debug('CPU idle [{}] total [{}]'.format(localDict['idle_processes'], total))
+        
         return( localDict )
