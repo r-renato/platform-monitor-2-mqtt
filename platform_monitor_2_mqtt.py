@@ -141,7 +141,8 @@ class Monitor2MQTT(Thread):
     
     def _collect_data(self):
         localDict = {}
-        localDict["timestamp"] = datetime.now(get_localzone()).isoformat()
+        format_data = "%Y-%m-%d %H:%M:%S"
+        localDict["timestamp"] = datetime.now(get_localzone()).strftime(format_data) #.isoformat()
         for (each_key, each_val) in config.items('Modules'):
             split_val = [st.strip() for st in each_val.split(',')]
             
