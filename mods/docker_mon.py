@@ -7,15 +7,19 @@ class DocketMon:
     
     _docker_cmd = None
     
+    _isInstalled = True
+    
     def __init__(self, config) -> None:
         self._logger = logging.getLogger('platformMonitor')  
         
         self._docker_cmd = self._retrieveDockerCommand()
         if len(self._docker_cmd) > 0:
             self._modDict['info'] = self._getDockerInfo()
+        else:
+            self._isInstalled = False
     
     def getData(self):
-        return self._modDict    
+        return self._modDict   
     
     def _getDataFromSubprocess(self, command):
         # self._logger.info( command )
@@ -28,10 +32,11 @@ class DocketMon:
         return( self._getDataFromSubprocess( command ) )
         
     def collect(self):
-        self._modDict = { 
-            **self._modDict,
-            **self._getImagesAndContainersData()
-            }
+        if self._isInstalled:
+            self._modDict = { 
+                **self._modDict,
+                **self._getImagesAndContainersData()
+                }
         
     def _getDockerInfo(self):
         localDict = {}
