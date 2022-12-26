@@ -17,6 +17,7 @@ class RPIDevice:
             **self._modDict
             }
         self._modDict['memory'] = self._getMemoryInfo()
+        self._modDict['cpu'] = self._getCPUInfo()
         self._modDict['storage'] = self._getStorageInfo()
         self._modDict['network'] = self._getNetworkInfo()
         self._modDict['temperature'] = self._getDeviceTemperature()
@@ -31,7 +32,7 @@ class RPIDevice:
     def _getDataFromSubprocess(self, command):
         out = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         stdout, _ = out.communicate()
-        return( stdout.decode('utf-8').rstrip() )
+        return( stdout.decode('utf-8').rstrip().lstrip() )
 
     def _getDeviceInfo(self):    
         localDict = {}
@@ -290,4 +291,34 @@ class RPIDevice:
             
             localDict[currLine] = netDict
             
+        return( localDict )
+
+    def _getCPUInfo(self):
+        localDict = {}
+
+        command = "grep 'cpu ' /proc/stat"
+        response = self._getDataFromSubprocess( command )
+        lineParts = response.split()
+
+        localDict['normal_processes_user_mode'] = int(lineParts[ 0 ])
+        localDict['nice_processes_user_mode'] = int(lineParts[ 1 ])
+        localDict['system_processes_kernel_mode'] = int(lineParts[ 2 ])
+        localDict['idle_processes'] = int(lineParts[ 3 ])
+        localDict['iowait_processes'] = int(lineParts[ 4 ])
+        localDict['irq_processes'] = int(lineParts[ 5 ])
+        localDict['softirq_processes'] = int(lineParts[ 6 ])
+        localDict['steal_processes'] = int(lineParts[ 7 ])
+        localDict['guest_processes'] = int(lineParts[ 8 ])
+        localDict['guest_nice_processes'] = int(lineParts[ 9 ])
+        
+        total: int = localDict['normal_processes_user_mode'] 
+        + localDict['nice_processes_user_mode']
+        + localDict['system_processes_kernel_mode']
+        + localDict['idle_processes']
+        + localDict['iowait_processes']
+        + localDict['irq_processes']
+        + localDict['softirq_processes']
+        
+        localDict['average_idle_percentage'] = round((localDict['idle_processes'] * 100 ) / total, 1)
+        
         return( localDict )
