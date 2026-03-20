@@ -1,3 +1,34 @@
-paho-mqtt>=1.4.0
-tzlocal>=2.1.0
-sdnotify>=0.3.1
+# paho-mqtt>=1.4.0
+# tzlocal>=2.1.0
+# sdnotify>=0.3.1
+
+
+# platform-monitor-2-mqtt — dipendenze Python
+#
+# Installazione consigliata in virtualenv:
+#   python3 -m venv .venv
+#   source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# Per aggiornare i pin senza rompere nulla:
+#   pip install pip-tools
+#   pip-compile requirements.in
+
+# MQTT client
+paho-mqtt>=1.6.0,<3.0
+
+# Metriche di sistema: CPU, RAM, storage, network
+# Sostituisce la maggior parte delle chiamate subprocess in rpi_device.py
+# Portabile su Linux x86, ARM, RPi senza modifiche
+psutil>=5.9.0
+
+# Notifica systemd (Type=notify nel .service)
+sdnotify>=0.3.2
+
+# RIMOSSO: tzlocal
+# Sostituito da zoneinfo (stdlib da Python 3.9) + datetime.now().astimezone()
+# Non richiede dipendenze esterne per ottenere il timezone locale.
+#
+# RIMOSSO: docker SDK (docker>=6.0)
+# Il modulo docker_mon usa la CLI via _run_cmd() sicuro,
+# senza dipendenza dall'SDK ufficiale.

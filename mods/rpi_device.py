@@ -1,320 +1,440 @@
-import subprocess
-import logging
+"""
+rpi_device.py — Metriche hardware del dispositivo.
 
-class RPIDevice:
-    _default_domain = ''
-    
-    _logger = None
-    _modDict = {}
-    
+Raccoglie:
+  - info dispositivo   (board, CPU model, core count)    da /proc/cpuinfo
+  - memoria RAM        (totale, usata, libera, available) via psutil
+  - CPU usage          (percentuale reale, doppio sample) via psutil
+  - storage            (per mount point, valori reali GB) via psutil
+  - rete               (interfacce UP, IP, MAC, RX/TX)   via psutil
+  - temperatura        CPU da /sys/class/thermal          sempre
+                       GPU da vcgencmd                    solo se disponibile
+
+Compatibilità:
+  - Linux generico x86/ARM: tutte le metriche tranne quelle RPi-specifiche
+  - Raspberry Pi: tutte le metriche inclusa GPU temp via vcgencmd
+  - Container (Docker/K8s): metriche disponibili nel namespace del container
+
+Note sul CPU usage:
+  Il vecchio codice leggeva i tick cumulativi di /proc/stat una sola volta
+  e calcolava idle% sull'intera vita del processo — un numero privo di
+  significato operativo. psutil.cpu_percent(interval=N) esegue correttamente
+  due letture distanziate di N secondi e calcola la percentuale sul delta,
+  esattamente come fa top(1). L'interval è configurabile per non bloccare
+  il ciclo di raccolta più del necessario.
+
+Note sullo storage:
+  Il vecchio codice applicava next_power_of_2() a tutti i valori, arrotondando
+  un disco da 59 GB a 64 GB e falsificando tutti i calcoli derivati.
+  Il nuovo codice usa i valori reali di psutil in GB con 1 decimale.
+"""
+
+from __future__ import annotations
+
+import psutil
+
+from mods.base_module import BaseModule
+
+
+# Filesystem da escludere dal report storage —
+# sono pseudo-filesystem o mount temporanei che non interessano il monitoraggio
+_EXCLUDED_FS_TYPES = frozenset({
+    "tmpfs", "devtmpfs", "devfs", "overlay",
+    "aufs", "squashfs", "nsfs", "cgroup",
+    "cgroup2", "sysfs", "proc", "debugfs",
+    "tracefs", "securityfs", "pstore",
+})
+
+# Mount point da escludere esplicitamente
+_EXCLUDED_MOUNT_POINTS = frozenset({
+    "/boot", "/boot/efi", "/boot/firmware",
+})
+
+# Intervallo in secondi per il campionamento CPU (doppio sample psutil)
+# Valori più alti = misura più precisa, ma blocca collect() per quel tempo
+_CPU_SAMPLE_INTERVAL = 1.0
+
+
+class RPIDevice(BaseModule):
+
     def __init__(self, config) -> None:
-        self._logger = logging.getLogger('platformMonitor')  
-        
-        self._modDict['info'] = self._getDeviceInfo()
-            
-    def collect(self):
-        self._modDict = { 
-            **self._modDict
-            }
-        self._modDict['memory'] = self._getMemoryInfo()
-        self._modDict['cpu'] = self._getCPUInfo()
-        self._modDict['storage'] = self._getStorageInfo()
-        self._modDict['network'] = self._getNetworkInfo()
-        self._modDict['temperature'] = self._getDeviceTemperature()
-        
-        for device in self._modDict['storage']:
-            if "/" == device['mount_point']:
-                self._modDict['info']['fs_total_gb'] = device['size_total_gb']
-        
-    def getData(self):
-        return self._modDict
-    
-    def _getDataFromSubprocess(self, command):
-        out = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        stdout, _ = out.communicate()
-        return( stdout.decode('utf-8').rstrip().lstrip() )
+        super().__init__(config)
 
-    def _getDeviceInfo(self):    
-        localDict = {}
-        
-        key = 'board'
-        command = '/bin/cat /proc/cpuinfo | /bin/egrep "Model" | cut -d: -f2'
-        localDict[ key ] = self._getDataFromSubprocess( command ).replace(u'\u0000', '').lstrip()
-        
-        key = 'board_hardware'
-        command = '/bin/cat /proc/cpuinfo | /bin/egrep "Hardware" | cut -d: -f2'
-        localDict[ key ] = self._getDataFromSubprocess( command ).lstrip()
-        
-        key = 'board_revision'
-        command = '/bin/cat /proc/cpuinfo | /bin/egrep "Revision" | cut -d: -f2'
-        localDict[ key ] = self._getDataFromSubprocess( command ).lstrip()
-                                
-        key = 'board_serial'
-        command = '/bin/cat /proc/cpuinfo | /bin/egrep "Serial" | cut -d: -f2'
-        localDict[ key ] = self._getDataFromSubprocess( command ).lstrip()
-        
-        key = 'processor'
-        command = '/bin/cat /proc/cpuinfo | /bin/egrep "model name" | head -1 | cut -d: -f2'
-        localDict[ key ] = self._getDataFromSubprocess( command ).lstrip()        
-        
-        key = 'processor_cores'
-        command = 'nproc --all'
-        localDict[ key ] = int( self._getDataFromSubprocess( command ).lstrip() )   
-        
-        key = 'ram_total_mb'
-        command = "free --mega | grep 'Mem:' | cut -d: -f2 | awk '{ print $1}'"
-        localDict[ key ] = self.next_power_of_2(int( self._getDataFromSubprocess( command ).lstrip() ))*1024
-        
-        return( localDict )
-    
-    def next_power_of_2(self, size):
-        size_as_nbr = int(size) - 1
-        return 1 if size == 0 else (1 << size_as_nbr.bit_length()) / 1024
+        # vcgencmd è disponibile solo su Raspberry Pi con firmware Broadcom
+        self._vcgencmd_path: str | None = self._which("vcgencmd")
+        if self._vcgencmd_path is None:
+            self._logger.info(
+                "rpi_device: vcgencmd non trovato — temperatura GPU non disponibile"
+            )
 
-    def _getDeviceTemperature(self):
-        localDict = {}
-        
-        key = 'cpu'
-        command = "cat /sys/class/thermal/thermal_zone0/temp"
-        localDict[ key ] = float(round(int(self._getDataFromSubprocess( command ).lstrip())/1000, 1))
-        
-        key = 'gpu'
-        command = "vcgencmd measure_temp | grep  -o -E '[[:digit:]].*'"
-        localDict[ key ] = float( self._getDataFromSubprocess( command ).lstrip().replace('\'C', '') )
-        
-        localDict['measurement'] = "°C"
-        
-        return( localDict )
-    
-    def _getStorageInfo(self):
-        localDict = {}
-    
-        command = "/bin/df -m | /usr/bin/tail -n +2 | /bin/egrep -v 'tmpfs|boot'"
-        response = self._getDataFromSubprocess( command ).split("\n")
-        
-        trimmedLines = []
-        for currLine in response:
-            trimmedLine = currLine.lstrip().rstrip()
-            if len(trimmedLine) > 0:
-                trimmedLines.append(trimmedLine)
-        self._logger.debug('_getStorageInfo() trimmedLines=[{}]'.format(trimmedLines))
-        
-        #  RESPONSE EXAMPLES
-        #
-        #  Filesystem     1M-blocks  Used Available Use% Mounted on
-        #  /dev/root          59998   9290     48208  17% /
-        #  /dev/sda1         937872 177420    712743  20% /media/data
-        # or
-        #  /dev/root          59647  3328     53847   6% /
-        #  /dev/sda1           3703    25      3472   1% /media/pi/SANDISK
-        # or
-        #  xxx.xxx.xxx.xxx:/srv/c2db7b94 200561 148655 41651 79% /
+        # Le info statiche del dispositivo vengono raccolte una sola volta
+        self._device_info: dict = self._collect_device_info()
 
-        # FAILING Case v1.4.0:
-        # Here is the output of 'df -m'
+    # ------------------------------------------------------------------
+    # Interfaccia BaseModule
+    # ------------------------------------------------------------------
 
-        # Sys. de fichiers blocs de 1M Utilisé Disponible Uti% Monté sur
-        # /dev/root 119774 41519 73358 37% /
-        # devtmpfs 1570 0 1570 0% /dev
-        # tmpfs 1699 0 1699 0% /dev/shm
-        # tmpfs 1699 33 1667 2% /run
-        # tmpfs 5 1 5 1% /run/lock
-        # tmpfs 1699 0 1699 0% /sys/fs/cgroup
-        # /dev/mmcblk0p1 253 55 198 22% /boot
-        # tmpfs 340 0 340 0% /run/user/1000
+    def collect(self) -> None:
+        self._data = {
+            "info":        {**self._device_info, **self._collect_fs_total()},
+            "memory":      self._collect_memory(),
+            "cpu":         self._collect_cpu(),
+            "storage":     self._collect_storage(),
+            "network":     self._collect_network(),
+            "temperature": self._collect_temperature(),
+        }
 
-        # FAILING Case v1.6.x (issue #61)
-        # [[/bin/df: /mnt/sabrent: No such device or address',
-        #   '/dev/root         119756  19503     95346  17% /',
-        #   '/dev/sda1         953868 882178     71690  93% /media/usb0',
-        #   '/dev/sdb1         976761  93684    883078  10% /media/pi/SSD']]
-                         
-        drivers = []
-        for currLine in trimmedLines:
-            deviceDict = {}
-            if 'no such device' in currLine.lower():
-                self._logger.debug('BAD LINE FORMAT, Skipped=[{}]'.format(currLine))
+    def getData(self) -> dict:
+        return self._data
+
+    # ------------------------------------------------------------------
+    # Info statiche dispositivo (raccolte una sola volta nel __init__)
+    # ------------------------------------------------------------------
+
+    def _collect_device_info(self) -> dict:
+        """
+        Legge /proc/cpuinfo direttamente tramite _read_file().
+
+        I campi Model, Hardware, Revision, Serial esistono solo su ARM/RPi.
+        Su x86 questi campi sono assenti: restituiamo stringa vuota senza errori.
+        Il campo "model name" e il conteggio dei core sono disponibili su
+        qualsiasi architettura Linux.
+        """
+        result: dict = {
+            "board":           "",
+            "board_hardware":  "",
+            "board_revision":  "",
+            "board_serial":    "",
+            "processor":       "",
+            "processor_cores": 0,
+            "ram_total_mb":    0,
+        }
+
+        cpuinfo = self._read_file("/proc/cpuinfo")
+        if cpuinfo:
+            for line in cpuinfo.splitlines():
+                if ":" not in line:
+                    continue
+                key, _, value = line.partition(":")
+                key   = key.strip()
+                value = value.strip()
+
+                if key == "Model":
+                    result["board"] = value
+                elif key == "Hardware":
+                    result["board_hardware"] = value
+                elif key == "Revision":
+                    result["board_revision"] = value
+                elif key == "Serial":
+                    result["board_serial"] = value
+                elif key == "model name" and not result["processor"]:
+                    # Prendiamo solo il primo "model name" (tutti i core sono uguali)
+                    result["processor"] = value
+
+        # psutil per core count e RAM totale: più affidabili di nproc e free
+        result["processor_cores"] = psutil.cpu_count(logical=True) or 0
+
+        mem = psutil.virtual_memory()
+        # RAM totale in MB, arrotondata alla potenza di 2 più vicina
+        # SOLO per il campo "ram_total_mb" nel device info (valore nominale,
+        # es. 4096 MB per un RPi 4 da 4 GB).
+        # I valori operativi in _collect_memory() usano i byte reali.
+        result["ram_total_mb"] = self._round_to_power_of_2_mb(mem.total)
+
+        return result
+
+    def _collect_fs_total(self) -> dict:
+        """
+        Aggiunge fs_total_gb al device info: la dimensione del filesystem root.
+        Separata da _collect_device_info perché dipende da psutil.disk_usage
+        che potrebbe non essere disponibile in certi ambienti container.
+        """
+        try:
+            usage = psutil.disk_usage("/")
+            return {"fs_total_gb": round(usage.total / 1_073_741_824, 1)}
+        except Exception as exc:  # pylint: disable=broad-except
+            self._logger.debug("rpi_device: fs_total_gb non disponibile: %s", exc)
+            return {"fs_total_gb": 0.0}
+
+    # ------------------------------------------------------------------
+    # Metriche dinamiche (raccolte a ogni ciclo)
+    # ------------------------------------------------------------------
+
+    def _collect_memory(self) -> dict:
+        """
+        Memoria RAM via psutil.virtual_memory().
+
+        Valori in KB per retrocompatibilità con il formato originale.
+        psutil restituisce byte: dividiamo per 1024.
+
+        Campi:
+          ram_total_kb    — RAM fisica totale
+          ram_used_kb     — RAM usata (total - free - buffers - cache)
+          ram_free_kb     — RAM libera (non usata da nulla)
+          ram_available_kb — RAM disponibile per nuovi processi
+                             (free + cache recuperabile; il valore più utile
+                              operativamente — quello che usa `free -h`)
+        """
+        mem = psutil.virtual_memory()
+        return {
+            "ram_total_kb":     mem.total     // 1024,
+            "ram_used_kb":      mem.used      // 1024,
+            "ram_free_kb":      mem.free      // 1024,
+            "ram_available_kb": mem.available // 1024,
+        }
+
+    def _collect_cpu(self) -> dict:
+        """
+        CPU usage via psutil.cpu_percent(interval=N).
+
+        psutil esegue due letture di /proc/stat distanziate di `interval` secondi
+        e calcola la percentuale sul delta — esattamente come fa top(1).
+
+        DIFFERENZA CRITICA rispetto al codice originale:
+          - Originale: legge /proc/stat UNA VOLTA, divide idle_ticks / total_ticks
+            dall'avvio del sistema. Questo misura l'idle medio dall'accensione,
+            non il carico corrente.
+          - Nuovo: doppio sample su _CPU_SAMPLE_INTERVAL secondi. Misura il carico
+            nell'ultimo secondo, non nella vita intera del processo.
+
+        cpu_percent restituisce 100 - idle%, quindi:
+          average_cpu_percentage  = percentuale di CPU utilizzata ORA
+          average_idle_percentage = 100 - cpu_percentage (per retrocompatibilità)
+        """
+        cpu_pct = psutil.cpu_percent(interval=_CPU_SAMPLE_INTERVAL)
+
+        result: dict = {
+            "average_cpu_percentage":  round(cpu_pct, 1),
+            "average_idle_percentage": round(100.0 - cpu_pct, 1),
+        }
+
+        # Frequenze CPU (opzionale — non disponibile su tutti i kernel/architetture)
+        try:
+            freq = psutil.cpu_freq()
+            if freq:
+                result["cpu_freq_mhz_current"] = round(freq.current, 0)
+                result["cpu_freq_mhz_max"]     = round(freq.max, 0)
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+        # Load average (1m, 5m, 15m) — disponibile su tutti i Linux
+        try:
+            load1, load5, load15 = psutil.getloadavg()
+            result["load_avg_1m"]  = round(load1,  2)
+            result["load_avg_5m"]  = round(load5,  2)
+            result["load_avg_15m"] = round(load15, 2)
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+        return result
+
+    def _collect_storage(self) -> list[dict]:
+        """
+        Storage per mount point via psutil.disk_partitions().
+
+        Valori reali in GB (1 decimale) — NON arrotondati a potenze di 2.
+
+        Il vecchio codice applicava next_power_of_2() a tutti i valori:
+          - Un disco da 59647 MB diventava 64 GB (nominale)
+          - Usato da 3328 MB diventava 4 GB
+          - available_gb = 64 - 4 = 60 GB (invece dei reali ~56 GB)
+        Tutti i valori erano sistematicamente falsificati.
+
+        Filtri applicati:
+          - Esclusi i filesystem virtuali (tmpfs, devtmpfs, overlay, ecc.)
+          - Esclusi /boot e /boot/efi (non interessanti per il monitoraggio)
+          - Esclusi i dispositivi con dimensione totale = 0
+        """
+        drives: list[dict] = []
+
+        try:
+            partitions = psutil.disk_partitions(all=False)
+        except Exception as exc:  # pylint: disable=broad-except
+            self._logger.error("rpi_device: disk_partitions() fallito: %s", exc)
+            return drives
+
+        for part in partitions:
+            if part.fstype in _EXCLUDED_FS_TYPES:
                 continue
-            lineParts = currLine.split()
-            self._logger.debug('lineParts({})={}'.format(len(lineParts), lineParts))
-            if len(lineParts) < 6:
-                self._logger.debug('BAD LINE FORMAT, Skipped=[{}]'.format(lineParts))
+            if part.mountpoint in _EXCLUDED_MOUNT_POINTS:
                 continue
-            
-            # tuple { total blocks, used%, mountPoint, device }
-            #
-            # new mech:
-            #  Filesystem     1M-blocks  Used Available Use% Mounted on
-            #     [0]           [1]       [2]     [3]    [4]   [5]
-            #     [--]         [n-3]     [n-2]   [n-1]   [n]   [--]
-            #  where  percent_field_index  is 'n'
-            #
 
-            # locate our % used field...
-            for percent_field_index in range(len(lineParts) - 2, 1, -1):
-                if '%' in lineParts[percent_field_index]:
-                    break
-            self._logger.debug('percent_field_index=[{}]'.format(percent_field_index))
-            
-            total_size_idx = percent_field_index - 3
-            used_size_idx = percent_field_index - 2
-            available_size_idx = percent_field_index - 1
-            mount_idx = percent_field_index + 1
+            try:
+                usage = psutil.disk_usage(part.mountpoint)
+            except PermissionError:
+                self._logger.debug(
+                    "rpi_device: disk_usage() permesso negato su %s", part.mountpoint
+                )
+                continue
+            except Exception as exc:  # pylint: disable=broad-except
+                self._logger.debug(
+                    "rpi_device: disk_usage() fallito su %s: %s", part.mountpoint, exc
+                )
+                continue
 
-            # do we have a two part device name?
-            device = lineParts[0]
-            if total_size_idx != 1:
-                device = '{} {}'.format(lineParts[0], lineParts[1])
-            self._logger.debug('device=[{}]'.format(device))
-            deviceDict['device'] = device
-            
-            # do we have a two part mount point?
-            mount_point = lineParts[mount_idx]
-            if len(lineParts) - 1 > mount_idx:
-                mount_point = '{} {}'.format(
-                    lineParts[mount_idx], lineParts[mount_idx + 1])
-            self._logger.debug('mount_point=[{}]'.format(mount_point))
-            deviceDict['mount_point'] = mount_point
-            
-            deviceDict['size_total_gb'] = int('{:.0f}'.format(self.next_power_of_2(lineParts[total_size_idx])))
-            deviceDict['used_gb'] = int('{:.0f}'.format(self.next_power_of_2(lineParts[used_size_idx])))
-            deviceDict['available_gb'] = int(deviceDict['size_total_gb'] - deviceDict['used_gb'])
-            deviceDict['used_percentage'] = int(lineParts[percent_field_index].replace('%', ''))
-            
-            if deviceDict['size_total_gb'] > 0:
-                drivers.append( deviceDict )
-            
-        return( drivers )
-    
-    def _getMemoryInfo(self):
-        localDict = {}
-        
-        key = 'ram_total_kb'
-        command = "free -k | grep 'Mem:' | cut -d: -f2 | awk '{ print $1}'"
-        localDict[ key ] = int( self._getDataFromSubprocess( command ).lstrip() )  
-        
-        key = 'ram_used_kb'
-        command = "free -k | grep 'Mem:' | cut -d: -f2 | awk '{ print $2}'"
-        localDict[ key ] = int( self._getDataFromSubprocess( command ).lstrip() )  
-        
-        key = 'ram_free_kb'
-        command = "free -k | grep 'Mem:' | cut -d: -f2 | awk '{ print $3}'"
-        localDict[ key ] = int( self._getDataFromSubprocess( command ).lstrip() )  
-        
-        key = 'ram_available_kb'
-        command = "free -k | grep 'Mem:' | cut -d: -f2 | awk '{ print $6}'"
-        localDict[ key ] = int( self._getDataFromSubprocess( command ).lstrip() )  
-        
-        return( localDict )
-    
-    def _getNetworkInfo(self):
-        localDict = {}
-        
-        command = "ip link show | /bin/egrep -v 'link' | /bin/egrep 'state UP' | /bin/egrep -v 'lo' | awk -F: '{ print $2}'"
-        response = self._getDataFromSubprocess( command ).split("\n")
-        
-        trimmedLines = []
-        for currLine in response:
-            trimmedLine = currLine.lstrip().rstrip().lstrip() 
-            if len(trimmedLine) > 0:
-                trimmedLines.append(trimmedLine)
-        self._logger.debug('_getNetworkInfo() trimmedLines=[{}]'.format(trimmedLines))
-        
-        for currLine in trimmedLines:
-            netDict = {}
-            
-            command = "/sbin/ifconfig {} | /bin/egrep -w 'inet'".format(currLine)
-            response = self._getDataFromSubprocess( command ).rstrip().lstrip()        
-            self._logger.debug('_getNetworkInfo() trimmedLines=[{}]'.format(response))
-            if len(response) > 0:
-                lineParts = response.split()
-                netDict['ip'] = lineParts[ 1 ]
-                netDict['mask'] = lineParts[ 3 ]
-                netDict['broadcast'] = lineParts[ 5 ]
+            if usage.total == 0:
+                continue
 
-            command = "/sbin/ifconfig {} | /bin/egrep -w 'inet6'".format(currLine)
-            response = self._getDataFromSubprocess( command ).rstrip().lstrip()        
-            self._logger.debug('_getNetworkInfo() trimmedLines=[{}]'.format(response))
-            if len(response) > 0:
-                lineParts = response.split()
-                netDict['ip6'] = lineParts[ 1 ]
-            
-            command = "/sbin/ifconfig {} | /bin/egrep -w 'ether'".format(currLine)
-            response = self._getDataFromSubprocess( command ).rstrip().lstrip()        
-            self._logger.debug('_getNetworkInfo() trimmedLines=[{}]'.format(response))
-            if len(response) > 0:
-                lineParts = response.split()
-                netDict['mac'] = lineParts[ 1 ]
-                
-            rxDict = {}
-            command = "/sbin/ifconfig {} | /bin/egrep -w 'RX packets'".format(currLine)
-            response = self._getDataFromSubprocess( command ).rstrip().lstrip()        
-            self._logger.debug('_getNetworkInfo() trimmedLines=[{}]'.format(response))
-            if len(response) > 0:
-                lineParts = response.split()
-                rxDict['packets'] = int(lineParts[ 2 ])
-                rxDict['bytes'] = int(lineParts[ 4 ])
-            
-            command = "/sbin/ifconfig {} | /bin/egrep -w 'RX errors'".format(currLine)
-            response = self._getDataFromSubprocess( command ).rstrip().lstrip()        
-            self._logger.debug('_getNetworkInfo() trimmedLines=[{}]'.format(response))
-            if len(response) > 0:
-                lineParts = response.split()
-                rxDict['errors'] = int(lineParts[ 2 ])
-                rxDict['dropped'] = int(lineParts[ 4 ])
-                rxDict['overruns'] = int(lineParts[ 6 ])
-                rxDict['frame'] = int(lineParts[ 8 ])
-                
-            netDict['rx'] = rxDict            
-            
-            txDict = {}
-            command = "/sbin/ifconfig {} | /bin/egrep -w 'TX packets'".format(currLine)
-            response = self._getDataFromSubprocess( command ).rstrip().lstrip()        
-            self._logger.debug('_getNetworkInfo() trimmedLines=[{}]'.format(response))
-            if len(response) > 0:
-                lineParts = response.split()
-                txDict['packets'] = int(lineParts[ 2 ])
-                txDict['bytes'] = int(lineParts[ 4 ])
-                
-            command = "/sbin/ifconfig {} | /bin/egrep -w 'TX errors'".format(currLine)
-            response = self._getDataFromSubprocess( command ).rstrip().lstrip()        
-            self._logger.debug('_getNetworkInfo() trimmedLines=[{}]'.format(response))
-            if len(response) > 0:
-                lineParts = response.split()
-                txDict['errors'] = int(lineParts[ 2 ])
-                txDict['dropped'] = int(lineParts[ 4 ])
-                txDict['overruns'] = int(lineParts[ 6 ])
-                txDict['carrier'] = int(lineParts[ 8 ])
-                txDict['collisions'] = int(lineParts[ 10 ])
-                
-            netDict['tx'] = txDict
-            
-            localDict[currLine] = netDict
-            
-        return( localDict )
+            drives.append({
+                "device":          part.device,
+                "mount_point":     part.mountpoint,
+                "fstype":          part.fstype,
+                "size_total_gb":   round(usage.total   / 1_073_741_824, 1),
+                "used_gb":         round(usage.used    / 1_073_741_824, 1),
+                "available_gb":    round(usage.free    / 1_073_741_824, 1),
+                "used_percentage": usage.percent,
+            })
 
-    def _getCPUInfo(self):
-        localDict = {}
+        return drives
 
-        command = "grep 'cpu ' /proc/stat"
-        response = self._getDataFromSubprocess( command )
-        lineParts = response.split()
+    def _collect_network(self) -> dict:
+        """
+        Interfacce di rete via psutil.net_if_addrs() e net_if_stats().
 
-        localDict['normal_processes_user_mode'] = int(lineParts[ 1 ])
-        localDict['nice_processes_user_mode'] = int(lineParts[ 2 ])
-        localDict['system_processes_kernel_mode'] = int(lineParts[ 3 ])
-        localDict['idle_processes'] = int(lineParts[ 4 ])
-        localDict['iowait_processes'] = int(lineParts[ 5 ])
-        localDict['irq_processes'] = int(lineParts[ 6 ])
-        localDict['softirq_processes'] = int(lineParts[ 7 ])
-        localDict['steal_processes'] = int(lineParts[ 8 ])
-        localDict['guest_processes'] = int(lineParts[ 9 ])
-        localDict['guest_nice_processes'] = int(lineParts[ 10 ])
-        
-        total = localDict['normal_processes_user_mode'] + localDict['nice_processes_user_mode'] + localDict['system_processes_kernel_mode'] + localDict['idle_processes'] + localDict['iowait_processes'] + localDict['irq_processes'] + localDict['softirq_processes']
-        
-        localDict['average_idle_percentage'] = round((localDict['idle_processes'] * 100 ) / total, 1)
-        
-        # self._logger.debug('CPU idle [{}] total [{}] [{}]'.format(localDict['idle_processes'] * 100, total, (localDict['idle_processes'] * 100 ) / total))
-        
-        return( localDict )
+        Raccoglie solo le interfacce in stato UP e non loopback.
+        Per ogni interfaccia: IPv4, IPv6, MAC, statistiche RX/TX.
+
+        Rispetto all'originale (che invocava ifconfig 5-6 volte per interfaccia):
+          - Una sola chiamata a net_if_addrs() per tutti gli indirizzi
+          - Una sola chiamata a net_if_stats() per tutti gli stati
+          - Una sola chiamata a net_io_counters() per tutte le statistiche
+          - Nessun subprocess, nessun parsing di testo, nessun shell
+        """
+        result: dict = {}
+
+        try:
+            addrs   = psutil.net_if_addrs()
+            stats   = psutil.net_if_stats()
+            io_ctrs = psutil.net_io_counters(pernic=True)
+        except Exception as exc:  # pylint: disable=broad-except
+            self._logger.error("rpi_device: net info non disponibile: %s", exc)
+            return result
+
+        import socket as _socket  # import locale per non inquinare il namespace
+
+        AF_INET  = _socket.AF_INET
+        AF_INET6 = _socket.AF_INET6
+        AF_PACKET = getattr(_socket, "AF_PACKET", 17)  # Linux; 17 è il valore standard
+
+        for iface, iface_stats in stats.items():
+            # Salta loopback e interfacce DOWN
+            if iface == "lo" or not iface_stats.isup:
+                continue
+
+            net: dict = {}
+
+            # Indirizzi IP e MAC
+            for addr in addrs.get(iface, []):
+                if addr.family == AF_INET:
+                    net["ip"]        = addr.address
+                    net["mask"]      = addr.netmask or ""
+                    net["broadcast"] = addr.broadcast or ""
+                elif addr.family == AF_INET6:
+                    # Prendiamo solo il primo IPv6 (di solito il link-local)
+                    if "ip6" not in net:
+                        net["ip6"] = addr.address.split("%")[0]  # rimuove %scope_id
+                elif addr.family == AF_PACKET:
+                    net["mac"] = addr.address
+
+            # Statistiche RX/TX
+            io = io_ctrs.get(iface)
+            if io:
+                net["rx"] = {
+                    "packets":  io.packets_recv,
+                    "bytes":    io.bytes_recv,
+                    "errors":   io.errin,
+                    "dropped":  io.dropin,
+                }
+                net["tx"] = {
+                    "packets":  io.packets_sent,
+                    "bytes":    io.bytes_sent,
+                    "errors":   io.errout,
+                    "dropped":  io.dropout,
+                }
+
+            result[iface] = net
+
+        return result
+
+    def _collect_temperature(self) -> dict:
+        """
+        Temperature del dispositivo.
+
+        CPU: legge /sys/class/thermal/thermal_zone0/temp
+             Disponibile su ARM (RPi, Jetson, ecc.) e su molti x86 con ACPI.
+             Valore in milligradi Celsius: dividiamo per 1000.
+
+        GPU: invoca vcgencmd measure_temp — SOLO su Raspberry Pi.
+             Se vcgencmd non è disponibile, il campo gpu viene omesso
+             senza errori (il modulo rimane fully operational).
+
+        Sicurezza: _run_cmd([self._vcgencmd_path, "measure_temp"]) non usa shell,
+                   non interpola stringhe — nessun rischio di injection.
+        """
+        result: dict = {"measurement": "°C"}
+
+        # CPU temperature da /sys (nessun subprocess)
+        raw_cpu = self._read_file("/sys/class/thermal/thermal_zone0/temp")
+        if raw_cpu:
+            try:
+                result["cpu"] = round(int(raw_cpu) / 1000, 1)
+            except ValueError:
+                self._logger.debug("rpi_device: parsing temperatura CPU fallito: %r", raw_cpu)
+        else:
+            # Fallback: psutil.sensors_temperatures() se disponibile
+            try:
+                temps = psutil.sensors_temperatures()
+                if temps:
+                    # Prendiamo la prima sorgente disponibile (coretemp su x86,
+                    # cpu_thermal su RPi se /sys non è leggibile)
+                    for source, entries in temps.items():
+                        if entries:
+                            result["cpu"] = round(entries[0].current, 1)
+                            result["cpu_source"] = source
+                            break
+            except (AttributeError, Exception):  # pylint: disable=broad-except
+                pass
+
+        # GPU temperature via vcgencmd (solo RPi)
+        if self._vcgencmd_path:
+            raw_gpu = self._run_cmd(
+                [self._vcgencmd_path, "measure_temp"],
+                timeout=3,
+            )
+            # Output: "temp=47.2'C"
+            if raw_gpu and "=" in raw_gpu:
+                try:
+                    temp_str = raw_gpu.split("=")[1].replace("'C", "").strip()
+                    result["gpu"] = round(float(temp_str), 1)
+                except (ValueError, IndexError):
+                    self._logger.debug(
+                        "rpi_device: parsing temperatura GPU fallito: %r", raw_gpu
+                    )
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Utilità private
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _round_to_power_of_2_mb(total_bytes: int) -> int:
+        """
+        Arrotonda la RAM totale alla potenza di 2 in MB più vicina.
+
+        Usato SOLO per il campo ram_total_mb nel device info, che per
+        convenzione riporta la dimensione nominale del modulo RAM
+        (es. 4096 MB per un RPi con 4 GB di RAM, non 3927 MB reali).
+
+        Questo è l'UNICO posto dove l'arrotondamento a potenza di 2
+        ha senso. Tutte le altre metriche (storage, RAM operativa)
+        usano i valori reali.
+        """
+        mb = total_bytes // (1024 * 1024)
+        if mb <= 0:
+            return 0
+        # Trova la potenza di 2 >= mb
+        power = 1
+        while power < mb:
+            power <<= 1
+        return power

@@ -1,23 +1,159 @@
+# p-monitor-2-mqtt.service — Systemd unit per platform-monitor-2-mqtt
+#
+# Installazione:
+#   sudo ln -s /opt/platform-monitor-2-mqtt/p-monitor-2-mqtt.service \
+#              /etc/systemd/system/p-monitor-2-mqtt.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now p-monitor-2-mqtt.service
+#
+# Aggiornamento configurazione:
+#   sudo systemctl reload-or-restart p-monitor-2-mqtt.service
+
 [Unit]
 Description=Platform Monitor to MQTT
 Documentation=https://github.com/r-renato/platform-monitor-2-mqtt
-After=network.target mosquitto.service network-online.target
+# Avvia dopo che la rete è operativa e il broker MQTT locale (se presente) è up.
+# "Wants" è più permissivo di "Requires": se mosquitto non è installato,
+# il servizio parte comunque (il broker potrebbe essere remoto).
+After=network-online.target mosquitto.service
 Wants=network-online.target
-Requires=network.target
+# Se mosquitto è sulla stessa macchina, aspettalo; altrimenti ignora.
+# Rimuovere questa riga se il broker è sempre remoto.
+Wants=mosquitto.service
+
 
 [Service]
 Type=notify
+
+# ---------------------------------------------------------------------------
+# Identità — principio del minimo privilegio
+# ---------------------------------------------------------------------------
+# Il servizio gira come utente "daemon" senza shell di login.
+# Non usare root: non è necessario per leggere /proc, /sys e chiamare docker.
+#
+# Nota docker: per accedere al socket Docker (/var/run/docker.sock),
+# l'utente "daemon" deve far parte del gruppo "docker":
+#   sudo usermod -aG docker daemon
 User=daemon
 Group=daemon
-WorkingDirectory=/opt/platform-monitor-2-mqtt/
-ExecStart=/usr/bin/python3 -u /opt/platform-monitor-2-mqtt/platform_monitor_2_mqtt.py
-StandardOutput=null
-#StandardOutput=syslog
-#SyslogIdentifier=ISPliDet
-StandardError=journal
+
+# ---------------------------------------------------------------------------
+# Ambiente di esecuzione
+# ---------------------------------------------------------------------------
+WorkingDirectory=/opt/platform-monitor-2-mqtt
+
+# Virtualenv consigliato. Se si usa il Python di sistema, sostituire con:
+#   ExecStart=/usr/bin/python3 -u /opt/platform-monitor-2-mqtt/platform_monitor_2_mqtt.py
+ExecStart=/opt/platform-monitor-2-mqtt/.venv/bin/python \
+          -u \
+          /opt/platform-monitor-2-mqtt/platform_monitor_2_mqtt.py
+
+# Le credenziali MQTT non vanno in monitor.ini (file su disco, potenzialmente
+# leggibile). Usare un file di environment separato con permessi restrittivi:
+#   sudo install -o root -g daemon -m 640 /dev/null /etc/platform-monitor/env
+#   echo "MQTT_USERNAME=user"    | sudo tee -a /etc/platform-monitor/env
+#   echo "MQTT_PASSWORD=secret"  | sudo tee -a /etc/platform-monitor/env
+#EnvironmentFile=/etc/platform-monitor/env
+
 Environment=PYTHONUNBUFFERED=1
-Restart=always
-RestartSec=3
+
+# ---------------------------------------------------------------------------
+# Output e logging
+# ---------------------------------------------------------------------------
+# stdout → journal (visibile con: journalctl -u p-monitor-2-mqtt -f)
+# stderr → journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=platform-monitor
+
+# ---------------------------------------------------------------------------
+# Restart policy
+# ---------------------------------------------------------------------------
+Restart=on-failure
+RestartSec=10
+# Evita restart-storm: dopo 5 restart in 60 secondi systemd smette di riprovare
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# ---------------------------------------------------------------------------
+# Hardening — riduzione della superficie di attacco
+# ---------------------------------------------------------------------------
+#
+# Questi controlli limitano cosa il processo può fare anche in caso di
+# compromissione. Non impattano il funzionamento normale del daemon.
+#
+# Riferimento: systemd.exec(5), systemd-analyze security
+
+# Impedisce al processo di acquisire nuovi privilegi via setuid/setgid
+NoNewPrivileges=true
+
+# Il filesystem appare read-only tranne /tmp, /var/tmp e i path in
+# ReadWritePaths. Il daemon non ha bisogno di scrivere sul filesystem
+# di sistema — solo eventualmente su ./store/ per save_json.
+ProtectSystem=strict
+ReadWritePaths=/opt/platform-monitor-2-mqtt/store
+
+# /home degli utenti non visibile al processo
+ProtectHome=true
+
+# Namespace /proc privato: il processo vede solo i propri processi.
+# ATTENZIONE: disabilitare questa opzione (impostare a false o rimuoverla)
+# se i moduli devono leggere /proc/cpuinfo, /proc/uptime, /proc/stat
+# di altri processi o dell'intero sistema.
+# Con Python e psutil la lettura di /proc/* del sistema funziona anche
+# con ProtectProc=invisible perché il kernel espone i file di sistema
+# (non legati a un PID specifico) indipendentemente da questa opzione.
+ProtectProc=invisible
+
+# Impedisce modifiche ai parametri del kernel via /proc/sys e /sys
+ProtectKernelTunables=true
+
+# Impedisce il caricamento di moduli kernel
+ProtectKernelModules=true
+
+# Protegge i log del kernel
+ProtectKernelLogs=true
+
+# Spazio dei nomi del control group privato
+ProtectControlGroups=true
+
+# Restringe le system call disponibili al necessario per un processo Python.
+# "~" significa "nega queste syscall". Le syscall pericolose (ptrace, mount,
+# reboot, ecc.) vengono bloccate dal kernel — non solo non eseguibili,
+# ma il tentativo termina il processo con SIGSYS.
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @reboot @swap @obsolete
+
+# Impedisce la creazione di file SUID/SGID
+RestrictSUIDSGID=true
+
+# Disabilita la possibilità di ottenere dump del processo
+PrivateTmp=true
+
+# Namespace di rete: il processo usa la rete del sistema (necessario per MQTT)
+# PrivateNetwork=false  ← default, non cambiare
+
+# Capabilities: il processo non ha bisogno di nessuna capability speciale.
+# CAP_NET_RAW sarebbe necessaria solo per ICMP ping — non usato qui.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Restringe i tipi di address family utilizzabili (IPv4, IPv6, Unix socket
+# per il socket Docker — rimuovere AF_UNIX se Docker non è usato)
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Impedisce la creazione di namespace (usato da container escape)
+RestrictNamespaces=true
+
+# Blocca chiamate a execve() su filesystem montati noexec
+LockPersonality=true
+
+# Memoria non eseguibile: impedisce attacchi JIT-spray / shellcode
+MemoryDenyWriteExecute=false
+# Nota: false perché Python (e alcune estensioni C come psutil) usano
+# memoria JIT. Impostare a true solo se si usa PyPy o CPython puro
+# senza estensioni che compilano codice a runtime.
+
 
 [Install]
 WantedBy=multi-user.target

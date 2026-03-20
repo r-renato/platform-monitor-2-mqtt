@@ -1,65 +1,151 @@
+# monitor.dist — Template di configurazione per platform-monitor-2-mqtt
+#
+# Istruzioni:
+#   cp monitor.dist monitor.ini
+#   Modificare monitor.ini secondo il proprio ambiente.
+#   monitor.ini NON deve essere committato (è in .gitignore).
+#
+# Formato: INI standard, commenti con #, nessuna interpolazione di variabili.
+# Le variabili d'ambiente MQTT_* hanno precedenza sulle opzioni di questa sezione.
 
+# ---------------------------------------------------------------------------
 [General]
-# default domain to use when hostname -f doesn't return a proper fqdn
-#fallback_domain = home
+# ---------------------------------------------------------------------------
 
-# save_json = true
+# Dominio di fallback usato quando hostname -f non restituisce un FQDN completo.
+# Esempio: se l'hostname è "raspberrypi" e fallback_domain = "home.local",
+# il FQDN riportato sarà "raspberrypi.home.local".
+# Se omesso, viene usato il solo hostname corto.
+#fallback_domain = home.local
 
+# Salva l'ultimo JSON raccolto su ./store/last.json dopo ogni ciclo.
+# Utile per debug o per integrazioni che leggono da filesystem.
+#save_json = false
+
+
+# ---------------------------------------------------------------------------
 [Modules]
-# 
-operative_system=gen_linux_os,GenericLinuxOS
-device=rpi_device,RPIDevice
-docker=docker_mon,DocketMon
-keepalived=keepalived_mon,KeepalivedMon
+# ---------------------------------------------------------------------------
+#
+# Formato: chiave = nome_file_modulo,NomeClasse
+#
+# Il daemon cerca il modulo in mods/<nome_file_modulo>.py e istanzia
+# <NomeClasse>(config). I moduli vengono caricati dinamicamente con
+# importlib — nessun restart necessario per aggiungerne di nuovi,
+# basta aggiungere la riga qui e riavviare il servizio.
+#
+# I moduli con dipendenze opzionali (docker, keepalived) si disabilitano
+# automaticamente se il tool non è installato — nessun errore a runtime.
+#
+# Moduli disponibili:
+operative_system = gen_linux_os,GenericLinuxOS
+device           = rpi_device,RPIDevice
+docker           = docker_mon,DockerMon
+keepalived       = keepalived_mon,KeepalivedMon
 
+# Per disabilitare un modulo: commentare la riga corrispondente.
+# Per aggiungere un modulo custom: creare mods/mio_modulo.py con una classe
+# che estende BaseModule e aggiungere la riga:
+#   mio_modulo = mio_modulo,MioModulo
+
+
+# ---------------------------------------------------------------------------
 [MQTT]
-# The hostname or IP address of the MQTT broker to connect to (Default: localhost)
-# Also read from the MQTT_HOSTNAME environment variable
+# ---------------------------------------------------------------------------
+
+# Hostname o indirizzo IP del broker MQTT.
+# Variabile d'ambiente: MQTT_HOSTNAME (ha precedenza su questo valore)
+# Default: localhost
 #hostname = localhost
 
-# The TCP port the MQTT broker is listening on (Default: 1883)
-# Also read from the MQTT_PORT environment variable
+# Porta TCP del broker.
+# Variabile d'ambiente: MQTT_PORT
+# Default: 1883 (plain), 8883 (TLS)
 #port = 1883
 
-# The MQTT broker authentification credentials (Default: no authentication)
-# Will also read from MQTT_USERNAME and MQTT_PASSWORD environment variables
+# Credenziali di autenticazione.
+# Variabili d'ambiente: MQTT_USERNAME, MQTT_PASSWORD (consigliate rispetto al file)
+# Se il broker non richiede autenticazione, omettere entrambe.
 #username = user
-#password = pwd123
+#password = secret
 
-# Enable TLS/SSL on the connection
-#tls = false
-
-# Path to CA Certificate file to verify host
-#tls_ca_cert =
-
-# Path to TLS client auth key file
-#tls_keyfile =
-
-# Path to TLS client auth certificate file
-#tls_certfile =
-
-# Maximum period in seconds between ping messages to the broker. (Default: 60)
+# Intervallo keepalive in secondi: tempo massimo tra ping al broker.
+# Valori bassi aumentano il traffico ma rilevano disconnessioni più velocemente.
+# Default: 60
 #keepalive = 60
 
+# ---------------------------------------------------------------------------
+# TLS — lasciare tls = false per connessioni plain (default)
+# ---------------------------------------------------------------------------
+
+# Abilita TLS/SSL sulla connessione MQTT (porta tipica: 8883).
+#tls = false
+
+# Percorso del file CA per la verifica del certificato server.
+# Se omesso con tls = true, viene usato il bundle CA di sistema
+# (equivalente al comportamento di curl senza --cacert).
+#tls_ca_cert = /etc/ssl/certs/ca-certificates.crt
+
+# Certificato client e chiave privata per autenticazione TLS mutua (mTLS).
+# Entrambi obbligatori se il broker richiede autenticazione client via certificato.
+#tls_certfile = /etc/platform-monitor/client.crt
+#tls_keyfile  = /etc/platform-monitor/client.key
+
+
+# ---------------------------------------------------------------------------
 [MQTT topic]
-# NOTE: The MQTT topic used for this device is constructed as:
-#  {base_topic}/{sensor_name}
+# ---------------------------------------------------------------------------
 #
-# The MQTT base topic under which to publish the Raspberry Pi sensor data topics.
+# Il topic completo per ogni dato è costruito come:
+#   {base_topic}/{sensor_name}/{subtopic}
+#
+# Subtopic pubblicati:
+#   /values       — JSON con tutte le metriche (retain=true)
+#   /availability — "online" / "offline"        (retain=true)
+#   /timestamp    — ISO 8601 dell'ultimo ciclo  (retain=false)
+
+# Prefisso comune a tutti i topic di questo nodo.
+# Default: home/nodes
 #base_topic = home/nodes
 
-# The MQTT name for this Raspberry Pi as a sensor
+# Nome univoco di questo nodo nel topic.
+# Usare un nome che identifichi chiaramente la macchina.
+# Default: rpi-reporter
 #sensor_name = rpi-{hostname}
 
+
+# ---------------------------------------------------------------------------
 [Daemon]
-# Enable or Disable an endless execution loop (Default: true)
+# ---------------------------------------------------------------------------
+
+# Esecuzione continua come daemon (true) o singola esecuzione e uscita (false).
+# In modalità singola equivale a --test da riga di comando.
+# Default: true
 #enabled = true
 
-# This script reports RPi values at a fixed interval in minutes [2-30], [Default: 5]
+# Intervallo tra un ciclo di raccolta e il successivo, in minuti.
+# Minimo: 1 minuto (valori inferiori vengono ignorati e sostituiti con 1).
+# Default: 1
 #interval_in_minutes = 5
 
+
+# ---------------------------------------------------------------------------
 [Logger sessions]
-# 
+# ---------------------------------------------------------------------------
+#
+# Configurazione del logging in formato standard Python logging.config.fileConfig.
+# Modificare level= per cambiare la verbosità senza riavviare
+# (richiede comunque reload del servizio).
+#
+# Per abilitare il logging su file aggiungere un FileHandler:
+#   [handlers]
+#   keys=consoleHandler,fileHandler
+#
+#   [handler_fileHandler]
+#   class=FileHandler
+#   formatter=simpleFormatter
+#   args=('/var/log/platform-monitor.log', 'a')
+
     [loggers]
     keys=root,platformMonitor
 
@@ -70,7 +156,7 @@ keepalived=keepalived_mon,KeepalivedMon
     keys=simpleFormatter
 
     [logger_root]
-    level=DEBUG
+    level=WARNING
     handlers=consoleHandler
 
     [logger_platformMonitor]
@@ -81,10 +167,9 @@ keepalived=keepalived_mon,KeepalivedMon
 
     [handler_consoleHandler]
     class=StreamHandler
-    #level=INFO
     formatter=simpleFormatter
     args=(sys.stdout,)
 
     [formatter_simpleFormatter]
     format=%(asctime)s - %(name)s - %(levelname)s - %(message)s
-    
+    datefmt=%Y-%m-%d %H:%M:%S
