@@ -112,6 +112,7 @@ class Monitor2MQTT(Thread):
         # Costruzione del topic base
         base_topic   = config["MQTT topic"].get("base_topic",   self._DEFAULT_BASE_TOPIC).lower().strip()
         sensor_name  = config["MQTT topic"].get("sensor_name",  self._DEFAULT_SENSOR_NAME).lower().strip()
+        sensor_name  = sensor_name.replace("{hostname}", __import__("socket").gethostname().lower())
         self._topic  = f"{base_topic}/{sensor_name}"
         logger.debug("Topic MQTT base: %s", self._topic)
 
