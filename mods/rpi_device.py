@@ -357,59 +357,47 @@ class RPIDevice(BaseModule):
         return result
 
     def _collect_temperature(self) -> dict:
-        """
-        Temperature del dispositivo.
-
-        CPU: legge /sys/class/thermal/thermal_zone0/temp
-             Disponibile su ARM (RPi, Jetson, ecc.) e su molti x86 con ACPI.
-             Valore in milligradi Celsius: dividiamo per 1000.
-
-        GPU: invoca vcgencmd measure_temp — SOLO su Raspberry Pi.
-             Se vcgencmd non è disponibile, il campo gpu viene omesso
-             senza errori (il modulo rimane fully operational).
-
-        Sicurezza: _run_cmd([self._vcgencmd_path, "measure_temp"]) non usa shell,
-                   non interpola stringhe — nessun rischio di injection.
-        """
         result: dict = {"measurement": "°C"}
 
-        # CPU temperature da /sys (nessun subprocess)
-        raw_cpu = self._read_file("/sys/class/thermal/thermal_zone0/temp")
-        if raw_cpu:
-            try:
-                result["cpu"] = round(int(raw_cpu) / 1000, 1)
-            except ValueError:
-                self._logger.debug("rpi_device: parsing temperatura CPU fallito: %r", raw_cpu)
-        else:
-            # Fallback: psutil.sensors_temperatures() se disponibile
-            try:
-                temps = psutil.sensors_temperatures()
-                if temps:
-                    # Prendiamo la prima sorgente disponibile (coretemp su x86,
-                    # cpu_thermal su RPi se /sys non è leggibile)
-                    for source, entries in temps.items():
-                        if entries:
-                            result["cpu"] = round(entries[0].current, 1)
-                            result["cpu_source"] = source
-                            break
-            except (AttributeError, Exception):  # pylint: disable=broad-except
-                pass
+        # Ordine di priorità per i sensori temperatura CPU
+        CPU_SENSOR_PRIORITY = ["k10temp", "coretemp", "cpu_thermal", "acpitz"]
 
-        # GPU temperature via vcgencmd (solo RPi)
+        try:
+            all_temps = psutil.sensors_temperatures()
+            if all_temps:
+                # CPU: primo sensore disponibile in ordine di priorità
+                for preferred in CPU_SENSOR_PRIORITY:
+                    if preferred in all_temps and all_temps[preferred]:
+                        entry = all_temps[preferred][0]
+                        result["cpu"] = round(entry.current, 1)
+                        result["cpu_source"] = preferred
+                        break
+
+                # GPU AMD integrata
+                if "amdgpu" in all_temps and all_temps["amdgpu"]:
+                    for entry in all_temps["amdgpu"]:
+                        if entry.label in ("edge", ""):
+                            result["gpu"] = round(entry.current, 1)
+                            result["gpu_source"] = "amdgpu"
+                            break
+
+                # NVMe
+                if "nvme" in all_temps and all_temps["nvme"]:
+                    for entry in all_temps["nvme"]:
+                        if "Composite" in entry.label or entry.label == "":
+                            result["nvme"] = round(entry.current, 1)
+                            break
+        except Exception:
+            pass
+
+        # vcgencmd solo su RPi
         if self._vcgencmd_path:
-            raw_gpu = self._run_cmd(
-                [self._vcgencmd_path, "measure_temp"],
-                timeout=3,
-            )
-            # Output: "temp=47.2'C"
+            raw_gpu = self._run_cmd([self._vcgencmd_path, "measure_temp"], timeout=3)
             if raw_gpu and "=" in raw_gpu:
                 try:
-                    temp_str = raw_gpu.split("=")[1].replace("'C", "").strip()
-                    result["gpu"] = round(float(temp_str), 1)
+                    result["gpu"] = round(float(raw_gpu.split("=")[1].replace("'C", "").strip()), 1)
                 except (ValueError, IndexError):
-                    self._logger.debug(
-                        "rpi_device: parsing temperatura GPU fallito: %r", raw_gpu
-                    )
+                    pass
 
         return result
 
