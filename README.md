@@ -11,7 +11,8 @@ automaticamente se il tool non è installato.
 
 ## Requisiti
 
-- Python 3.9+
+- Python 3.10+
+- `paho-mqtt` 2.x (installato tramite `requirements.txt`)
 - Broker MQTT raggiungibile (Mosquitto, EMQX, HiveMQ, ecc.)
 - `pip` e `venv` (inclusi nella maggior parte delle distribuzioni)
 
@@ -95,11 +96,12 @@ Sezioni principali:
 
 | Sezione | Contenuto |
 |---|---|
-| `[General]` | `fallback_domain`, `save_json` |
+| `[General]` | `fallback_domain`, `save_json`, attesa worker one-shot |
 | `[Modules]` | Moduli abilitati e relativi nomi di classe |
-| `[MQTT]` | Hostname, porta, credenziali, TLS |
+| `[MQTT]` | Hostname, porta, credenziali, TLS, QoS, timeout e reconnect |
 | `[MQTT topic]` | `base_topic`, `sensor_name` |
 | `[Daemon]` | `enabled`, `interval_in_minutes` |
+| `[Speedtest]` | Periodicità, worker asincrono, backoff, jitter, binding, cache e lock |
 | `[Logger sessions]` | Configurazione logging Python standard |
 
 ### Variabili d'ambiente
@@ -274,16 +276,16 @@ services:
 
 ```bash
 # Esecuzione singola (test, senza avviare il daemon)
-.venv/bin/python platform_monitor_2_mqtt.py --test
+./venv/bin/python platform_monitor_2_mqtt.py --test
 
 # Log verbosi
-.venv/bin/python platform_monitor_2_mqtt.py --test --verbose
+./venv/bin/python platform_monitor_2_mqtt.py --test --verbose
 
 # Log di debug (molto dettagliato)
-.venv/bin/python platform_monitor_2_mqtt.py --test --debug
+./venv/bin/python platform_monitor_2_mqtt.py --test --debug
 
 # Config in directory custom
-.venv/bin/python platform_monitor_2_mqtt.py -c /etc/platform-monitor/
+./venv/bin/python platform_monitor_2_mqtt.py -c /etc/platform-monitor/
 ```
 
 ---
@@ -333,6 +335,43 @@ sudo systemctl restart p-monitor-2-mqtt.service
 
 ---
 
+## Speedtest opzionale
+
+Il collector `speedtest_mon` usa il client ufficiale Ookla, interpreta il suo
+output JSON e pubblica download, upload, latenza, jitter, packet loss, ISP,
+interfaccia e server. Il test è eseguito in un worker dedicato: `collect()`
+restituisce subito, quindi le altre metriche continuano a essere raccolte e
+pubblicate mentre lo Speedtest è in corso.
+
+Abilitazione e configurazione consigliata:
+
+```ini
+[Modules]
+speedtest = speedtest_mon,SpeedtestMon
+
+[Speedtest]
+interval_in_minutes = 60
+timeout_seconds = 120
+run_on_start = false
+startup_delay_seconds = 60
+jitter_seconds = 300
+retry_interval_minutes = 15
+max_retry_interval_minutes = 240
+accept_license = true
+accept_gdpr = true
+# Se omessi usano PLATFORM_MONITOR_STORE_DIR
+#cache_file = /var/lib/platform-monitor/speedtest.json
+#lock_file = /var/lib/platform-monitor/speedtest.lock
+```
+
+Durante l'esecuzione `status` vale `running`. L'ultimo risultato valido resta
+disponibile in caso di errore con `status=error` e `stale=true`; gli errori
+consecutivi applicano un backoff progressivo. La cache persistente conserva
+anche la prossima esecuzione, mentre il lock impedisce test concorrenti tra
+daemon, `--test` e `--dry-run`.
+
+---
+
 ## Architettura
 
 ```
@@ -343,6 +382,10 @@ mods/
   rpi_device.py              — CPU, RAM, storage, rete, temperatura
   docker_mon.py              — container e immagini Docker
   keepalived_mon.py          — stato daemon keepalived
+  speedtest_mon.py           — prestazioni Internet via Speedtest CLI Ookla
+tests/
+  test_monitor.py            — test ciclo MQTT, reconnect, publish e shutdown
+  test_speedtest_mon.py      — test worker, scheduling, backoff, lock e cache
 monitor.dist                 — template di configurazione (copiare in monitor.ini)
 requirements.txt             — dipendenze Python
 p-monitor-2-mqtt.service     — unit systemd con hardening
@@ -368,4 +411,3 @@ sudo ln -s /opt/platform-monitor-2-mqtt/p-monitor-2-mqtt.service /etc/systemd/sy
 
 sudo systemctl daemon-reload
 sudo systemctl enable p-monitor-2-mqtt.service
-

@@ -65,6 +65,18 @@ class BaseModule(ABC):
         Se il modulo non è disponibile sull'host, restituisce {}.
         """
 
+    def wait_for_idle(self, timeout: float | None = None) -> bool:
+        """Attende eventuali attività asincrone del modulo.
+
+        I moduli sincroni sono sempre inattivi; i collector con worker dedicati
+        possono sovrascrivere il metodo.
+        """
+        return True
+
+    def close(self) -> None:
+        """Rilascia risorse e interrompe eventuali worker del modulo."""
+        return None
+
     @property
     def is_available(self) -> bool:
         """True se il modulo è operativo sull'host corrente."""

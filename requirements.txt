@@ -1,4 +1,3 @@
-# paho-mqtt>=1.4.0
 # tzlocal>=2.1.0
 # sdnotify>=0.3.1
 
@@ -15,7 +14,7 @@
 #   pip-compile requirements.in
 
 # MQTT client
-paho-mqtt>=1.6.0,<3.0
+paho-mqtt>=2.0.0,<3.0
 
 # Metriche di sistema: CPU, RAM, storage, network
 # Sostituisce la maggior parte delle chiamate subprocess in rpi_device.py

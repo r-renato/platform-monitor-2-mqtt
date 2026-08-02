@@ -22,6 +22,10 @@
 # Utile per debug o per integrazioni che leggono da filesystem.
 #save_json = false
 
+# Tempo massimo, in secondi, per attendere i worker asincroni nelle modalità
+# --test, --dry-run o Daemon.enabled=false. Default: 180.
+#one_shot_wait_seconds = 180
+
 
 # ---------------------------------------------------------------------------
 [Modules]
@@ -42,6 +46,10 @@ operative_system = gen_linux_os,GenericLinuxOS
 device           = rpi_device,RPIDevice
 docker           = docker_mon,DockerMon
 keepalived       = keepalived_mon,KeepalivedMon
+
+# Speedtest è disabilitato di default perché ogni esecuzione genera traffico
+# significativo. Decommentare solo dopo aver configurato la sezione [Speedtest].
+#speedtest        = speedtest_mon,SpeedtestMon
 
 # Per disabilitare un modulo: commentare la riga corrispondente.
 # Per aggiungere un modulo custom: creare mods/mio_modulo.py con una classe
@@ -73,6 +81,17 @@ keepalived       = keepalived_mon,KeepalivedMon
 # Valori bassi aumentano il traffico ma rilevano disconnessioni più velocemente.
 # Default: 60
 #keepalive = 60
+
+# QoS usato per values, availability, timestamp e LWT. Default: 1.
+#qos = 1
+
+# Timeout della prima connessione e della conferma delle pubblicazioni QoS.
+#connect_timeout_seconds = 10
+#publish_timeout_seconds = 10
+
+# Backoff di riconnessione gestito automaticamente da Paho.
+#reconnect_min_delay_seconds = 1
+#reconnect_max_delay_seconds = 60
 
 # ---------------------------------------------------------------------------
 # TLS — lasciare tls = false per connessioni plain (default)
@@ -127,6 +146,64 @@ keepalived       = keepalived_mon,KeepalivedMon
 # Minimo: 1 minuto (valori inferiori vengono ignorati e sostituiti con 1).
 # Default: 1
 #interval_in_minutes = 5
+
+
+# ---------------------------------------------------------------------------
+[Speedtest]
+# ---------------------------------------------------------------------------
+
+# Configurazione del modulo opzionale speedtest_mon.
+# Per abilitarlo, decommentare anche questa riga in [Modules]:
+#   speedtest = speedtest_mon,SpeedtestMon
+#
+# Il client richiesto è Speedtest CLI ufficiale Ookla (comando: speedtest),
+# non il differente pacchetto Python "speedtest-cli".
+
+# Intervallo tra due test reali. Il daemon può continuare a pubblicare ogni
+# minuto: tra un test e l'altro il modulo restituisce l'ultimo risultato.
+# Valore consigliato: 30-60 minuti. Minimo applicato: 15. Default: 60.
+#interval_in_minutes = 60
+
+# Tempo massimo concesso al comando speedtest. Range accettato: 10-600 secondi.
+# Default: 120.
+#timeout_seconds = 120
+
+# Esegue un test dopo il ritardo iniziale. Default: false, così restart ripetuti
+# non provocano nuovi test a ogni avvio.
+#run_on_start = false
+
+# Ritardo iniziale e jitter casuale applicato alla pianificazione. Il jitter
+# evita che più nodi eseguano il test nello stesso istante.
+#startup_delay_seconds = 60
+#jitter_seconds = 300
+
+# Backoff dopo errori consecutivi: 15, 30, 60... fino al massimo indicato.
+#retry_interval_minutes = 15
+#max_retry_interval_minutes = 240
+
+# Accetta in modo non interattivo licenza e informativa GDPR. Necessario quando
+# il client gira come servizio systemd senza terminale interattivo.
+#accept_license = true
+#accept_gdpr = true
+
+# Se specificato, forza un server invece della selezione automatica.
+# Ricavare gli ID con: speedtest --servers
+#server_id = 12345
+
+# Binding opzionale. Sono alternative/filtri passati direttamente al client.
+#interface = eth0
+#ip = 192.168.1.10
+#host = speedtest.example.net
+
+# Cache persistente dell'ultimo esito. Stringa vuota per disabilitarla.
+# Se omesso usa PLATFORM_MONITOR_STORE_DIR/speedtest.json; con la unit systemd
+# fornita il percorso è /var/lib/platform-monitor/speedtest.json, mentre in
+# esecuzione manuale il fallback è ./store/speedtest.json.
+#cache_file = /var/lib/platform-monitor/speedtest.json
+
+# Lock inter-processo: impedisce esecuzioni concorrenti da daemon, --test o
+# --dry-run sulla stessa macchina. Stringa vuota per disabilitarlo.
+#lock_file = /var/lib/platform-monitor/speedtest.lock
 
 
 # ---------------------------------------------------------------------------
