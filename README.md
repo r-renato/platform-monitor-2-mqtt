@@ -124,8 +124,7 @@ Per non mettere le credenziali in `monitor.ini`:
 sudo install -d -o root -g daemon -m 750 /etc/platform-monitor
 sudo install -o root -g daemon -m 640 /dev/null /etc/platform-monitor/env
 
-printf 'MQTT_USERNAME=myuser\nMQTT_PASSWORD=mysecret\n' | \
-    sudo tee /etc/platform-monitor/env > /dev/null
+printf 'MQTT_USERNAME=myuser\nMQTT_PASSWORD=mysecret\n' | tee /etc/platform-monitor/env > /dev/null
 ```
 
 Decommentare in `p-monitor-2-mqtt.service`:

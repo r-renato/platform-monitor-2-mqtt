@@ -21,6 +21,11 @@ Wants=network-online.target
 # Rimuovere questa riga se il broker è sempre remoto.
 Wants=mosquitto.service
 
+# Evita restart storm: dopo 5 riavvii in 60 secondi systemd
+# interrompe temporaneamente i tentativi.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
 
 [Service]
 Type=notify
@@ -46,7 +51,9 @@ WorkingDirectory=/opt/platform-monitor-2-mqtt
 #   ExecStart=/usr/bin/python3 -u /opt/platform-monitor-2-mqtt/platform_monitor_2_mqtt.py
 ExecStart=/opt/platform-monitor-2-mqtt/.venv/bin/python \
           -u \
-          /opt/platform-monitor-2-mqtt/platform_monitor_2_mqtt.py
+          /opt/platform-monitor-2-mqtt/platform_monitor_2_mqtt.py \
+          --config_dir \
+          /etc/platform-monitor
 
 # Le credenziali MQTT non vanno in monitor.ini (file su disco, potenzialmente
 # leggibile). Usare un file di environment separato con permessi restrittivi:
@@ -56,6 +63,11 @@ ExecStart=/opt/platform-monitor-2-mqtt/.venv/bin/python \
 #EnvironmentFile=/etc/platform-monitor/env
 
 Environment=PYTHONUNBUFFERED=1
+
+# Directory persistente usata per last.json e altri dati runtime.
+Environment=PLATFORM_MONITOR_STORE_DIR=/var/lib/platform-monitor
+StateDirectory=platform-monitor
+StateDirectoryMode=0750
 
 # ---------------------------------------------------------------------------
 # Output e logging
@@ -71,9 +83,6 @@ SyslogIdentifier=platform-monitor
 # ---------------------------------------------------------------------------
 Restart=on-failure
 RestartSec=10
-# Evita restart-storm: dopo 5 restart in 60 secondi systemd smette di riprovare
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # ---------------------------------------------------------------------------
 # Hardening — riduzione della superficie di attacco
@@ -91,7 +100,7 @@ NoNewPrivileges=true
 # ReadWritePaths. Il daemon non ha bisogno di scrivere sul filesystem
 # di sistema — solo eventualmente su ./store/ per save_json.
 ProtectSystem=strict
-ReadWritePaths=/opt/platform-monitor-2-mqtt/store
+ReadWritePaths=/var/lib/platform-monitor
 
 # /home degli utenti non visibile al processo
 ProtectHome=true
@@ -140,7 +149,7 @@ AmbientCapabilities=
 
 # Restringe i tipi di address family utilizzabili (IPv4, IPv6, Unix socket
 # per il socket Docker — rimuovere AF_UNIX se Docker non è usato)
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
 # Impedisce la creazione di namespace (usato da container escape)
 RestrictNamespaces=true
