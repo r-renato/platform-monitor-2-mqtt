@@ -57,6 +57,55 @@ def _reason_code_value(reason_code: Any) -> int:
         return -1
 
 
+def _read_systemd_credential(name: str) -> str | None:
+    """Legge una credenziale esposta da systemd in $CREDENTIALS_DIRECTORY.
+
+    Restituisce None se il servizio non gira sotto systemd, se la credenziale
+    non è stata caricata (LoadCredential/LoadCredentialEncrypted) o se è
+    vuota. Viene rimosso solo il newline finale: gli altri spazi fanno parte
+    del segreto.
+    """
+    directory = os.environ.get("CREDENTIALS_DIRECTORY")
+    if not directory or not name or "/" in name or name.startswith("."):
+        return None
+
+    path = Path(directory) / name
+    try:
+        value = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        if logger:
+            logger.warning(
+                'Credenziale systemd "%s" non leggibile: %s', name, exc
+            )
+        return None
+
+    if value.endswith("\n"):
+        value = value[:-1]
+        if value.endswith("\r"):
+            value = value[:-1]
+    return value or None
+
+
+def _resolve_mqtt_credential(
+    credential_name: str, env_name: str, ini_value: str | None
+) -> tuple[str | None, str]:
+    """Sceglie il valore di una credenziale MQTT e ne indica la fonte.
+
+    Precedenza: credenziale systemd, variabile d'ambiente, monitor.ini.
+    """
+    value = _read_systemd_credential(credential_name)
+    if value:
+        return value, "systemd-credential"
+    value = os.environ.get(env_name)
+    if value:
+        return value, "environment"
+    if ini_value:
+        return ini_value, "monitor.ini"
+    return None, "none"
+
+
 class Monitor2MQTT(Thread):
     """Raccoglie metriche dai moduli configurati e le pubblica su MQTT."""
 
@@ -150,10 +199,20 @@ class Monitor2MQTT(Thread):
         if config["MQTT"].getboolean("tls", False):
             self._configure_tls()
 
-        username = os.environ.get("MQTT_USERNAME") or config["MQTT"].get("username")
-        password = os.environ.get("MQTT_PASSWORD") or config["MQTT"].get("password")
+        username, username_source = _resolve_mqtt_credential(
+            "mqtt_username", "MQTT_USERNAME", config["MQTT"].get("username")
+        )
+        password, password_source = _resolve_mqtt_credential(
+            "mqtt_password", "MQTT_PASSWORD", config["MQTT"].get("password")
+        )
         if username:
             self._client.username_pw_set(username, password)
+            # Solo la fonte viene registrata, mai il valore.
+            logger.info(
+                "Autenticazione MQTT — username da %s, password da %s",
+                username_source,
+                password_source,
+            )
 
         logger.info(
             "Monitor configurato — topic=%s, polling=%d min, qos=%d",

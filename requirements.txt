@@ -24,6 +24,10 @@ psutil>=5.9.0
 # Notifica systemd (Type=notify nel .service)
 sdnotify>=0.3.2
 
+# Sonde DNS del modulo dns_mon (query UDP verso AdGuard, Unbound e resolver
+# pubblici senza passare dal resolver di sistema)
+dnspython>=2.4.0
+
 # RIMOSSO: tzlocal
 # Sostituito da zoneinfo (stdlib da Python 3.9) + datetime.now().astimezone()
 # Non richiede dipendenze esterne per ottenere il timezone locale.

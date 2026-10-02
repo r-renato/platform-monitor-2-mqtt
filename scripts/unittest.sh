@@ -176,6 +176,7 @@ dependencies = {
     "paho.mqtt.client": "paho-mqtt",
     "psutil": "psutil",
     "sdnotify": "sdnotify",
+    "dns": "dnspython",
 }
 
 missing = []
@@ -249,9 +250,29 @@ if [[ "${SKIP_COMPILE_CHECK}" != "1" ]]; then
     "${PYTHON_BIN}" -m compileall -q \
         platform_monitor_2_mqtt.py \
         mods \
-        tests
+        test
 
     ok "Compilazione sintattica completata"
+fi
+
+# ---------------------------------------------------------------------------
+# Script shell
+# ---------------------------------------------------------------------------
+
+if [[ "${SKIP_COMPILE_CHECK}" != "1" ]]; then
+    step "Controllo sintattico degli script shell"
+
+    for shell_script in scripts/install.sh scripts/uninstall.sh; do
+        bash -n "${shell_script}"
+    done
+
+    if command -v shellcheck >/dev/null 2>&1; then
+        shellcheck -S warning scripts/install.sh scripts/uninstall.sh
+        ok "bash -n e shellcheck superati"
+    else
+        warn "shellcheck non installato: eseguito solo bash -n"
+        ok "bash -n superato"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -299,6 +320,8 @@ required_sections = {
     "MQTT topic",
     "Daemon",
     "Speedtest",
+    "DnsMonitor",
+    "DnsMonitor probes",
     "Logger sessions",
     "loggers",
     "handlers",

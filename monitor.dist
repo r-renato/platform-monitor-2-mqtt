@@ -51,6 +51,11 @@ keepalived       = keepalived_mon,KeepalivedMon
 # significativo. Decommentare solo dopo aver configurato la sezione [Speedtest].
 #speedtest        = speedtest_mon,SpeedtestMon
 
+# Monitor di rete e DNS (catena AdGuard + Unbound): sonde ICMP/TCP/DNS e
+# rilevamento dei blackout. Richiede dnspython. Disabilitato di default perché
+# serve dichiarare le sonde: decommentare dopo aver configurato [DnsMonitor probes].
+#dns_monitor      = dns_mon,DnsMon
+
 # Per disabilitare un modulo: commentare la riga corrispondente.
 # Per aggiungere un modulo custom: creare mods/mio_modulo.py con una classe
 # che estende BaseModule e aggiungere la riga:
@@ -71,9 +76,14 @@ keepalived       = keepalived_mon,KeepalivedMon
 # Default: 1883 (plain), 8883 (TLS)
 #port = 1883
 
-# Credenziali di autenticazione.
-# Variabili d'ambiente: MQTT_USERNAME, MQTT_PASSWORD (consigliate rispetto al file)
-# Se il broker non richiede autenticazione, omettere entrambe.
+# Credenziali di autenticazione. Lasciare commentate queste due righe: questo
+# file è facile da condividere per errore. Fonti consigliate, in ordine di
+# precedenza:
+#   1. credenziali systemd cifrate (scripts/install.sh le crea);
+#   2. variabili d'ambiente MQTT_USERNAME, MQTT_PASSWORD
+#      (ad esempio da /etc/platform-monitor/env);
+#   3. questi valori, solo come ripiego.
+# Se il broker non richiede autenticazione, omettere tutto.
 #username = user
 #password = secret
 
@@ -204,6 +214,143 @@ keepalived       = keepalived_mon,KeepalivedMon
 # Lock inter-processo: impedisce esecuzioni concorrenti da daemon, --test o
 # --dry-run sulla stessa macchina. Stringa vuota per disabilitarlo.
 #lock_file = /var/lib/platform-monitor/speedtest.lock
+
+
+# ---------------------------------------------------------------------------
+[DnsMonitor]
+# ---------------------------------------------------------------------------
+
+# Configurazione del modulo opzionale dns_mon, che monitora la catena
+#   client -> AdGuard -> Unbound -> (DoT) -> WAN
+# con sonde ICMP, TCP e DNS e indica in quale livello si interrompe.
+# Per abilitarlo, decommentare anche questa riga in [Modules]:
+#   dns_monitor = dns_mon,DnsMon
+# e dichiarare le sonde in [DnsMonitor probes]. Richiede dnspython.
+#
+# Il modulo ha un proprio thread di campionamento, indipendente da
+# [Daemon] interval_in_minutes: a ogni ciclo il daemon pubblica l'ultimo stato
+# aggregato. Le sonde usano solo indirizzi IP, mai nomi, per non dipendere dal
+# DNS che stanno misurando.
+#
+# ICMP: viene usato un socket "ping" non privilegiato (richiede che
+# net.ipv4.ping_group_range includa il gruppo del servizio; è il default di
+# Debian/Proxmox) oppure un socket raw (CAP_NET_RAW, ad esempio se il servizio
+# gira come root). Se nessuno dei due è disponibile le sonde icmp ripiegano su
+# una connessione TCP alla porta 53 e il JSON le riporta come "tcp_fallback".
+
+# --- Frequenze di campionamento --------------------------------------------
+
+# Sonde di rete (icmp e tcp). Range 2-3600. Default: 10.
+#network_interval_seconds = 10
+
+# Sonde DNS (AdGuard, Unbound, resolver pubblico). Range 5-3600. Default: 30.
+#dns_interval_seconds = 30
+
+# Sonde "pesanti": query su un nome casuale, che non può essere in cache e
+# attraversa tutta la catena fino ai server autoritativi. Range 1-1440. Default: 5.
+#heavy_interval_minutes = 5
+
+# --- Campionamento adattivo ------------------------------------------------
+# Quando una sonda inizia a fallire le misure si infittiscono, per datare con
+# precisione inizio e fine del guasto; a riposo il carico resta minimo.
+# Il cache-miss non viene accelerato.
+
+# Default: true
+#adaptive_enabled = true
+
+# Intervallo durante un guasto. Range 1-60. Default: 3.
+#adaptive_interval_seconds = 3
+
+# Successi consecutivi di ogni sonda per tornare al ritmo normale. Default: 5.
+#adaptive_recovery_cycles = 5
+
+# Durata massima del campionamento veloce. Un guasto permanente (ad esempio un
+# peer che filtra l'ICMP) non lo mantiene attivo per sempre: scaduto il tempo,
+# le sonde ancora in errore vengono ignorate finché non si riprendono, mentre
+# un nuovo guasto lo riattiva. Range 1-1440. Default: 10.
+#adaptive_max_minutes = 10
+
+# --- Timeout e tentativi ---------------------------------------------------
+#icmp_timeout_seconds = 1
+#tcp_timeout_seconds = 2
+#dns_timeout_seconds = 2
+
+# Tentativi aggiuntivi immediati prima di considerare fallita una misura. Default: 1.
+#retries = 1
+
+# Sonde eseguite in parallelo. Evita che i timeout di un guasto allunghino il
+# ciclo. Range 1-16. Default: 4.
+#max_parallel_probes = 4
+
+# --- Soglie ----------------------------------------------------------------
+
+# Misure fallite consecutive dopo cui una sonda è considerata "giù". Un livello
+# è guasto solo quando TUTTE le sue sonde sono giù; se ne cade una sola lo
+# stato è "degraded". Default: 3.
+#failures_before_down = 3
+
+# Durata minima, in secondi, di un livello guasto per contarlo come blackout.
+# Le interruzioni più brevi sono contate in short_outages_24h. Default: 60.
+#blackout_threshold_seconds = 60
+
+# Finestra mobile per success_pct e percentili (p50, p95). Range 1-180. Default: 15.
+#window_minutes = 15
+
+# --- Domini di prova -------------------------------------------------------
+
+# Domini stabili interrogati a rotazione dalle sonde dns (di norma in cache).
+#test_domains = example.com, wikipedia.org, cloudflare.com
+
+# Zona per il cache-miss: si interroga <etichetta casuale>.<zona>. NXDOMAIN è una
+# risposta valida: ciò che si misura è la capacità di risolvere. Vuoto per disattivare.
+#cache_miss_zone = example.com
+
+# Livelli delle sonde dns su cui eseguire il cache-miss. Default: unbound.
+#cache_miss_layers = unbound
+
+# --- Speedtest e persistenza -----------------------------------------------
+
+# Lock di [Speedtest] lock_file. Lo speedtest satura la WAN: i blackout avvenuti
+# durante un test, o nei due minuti precedenti, sono segnalati con
+# during_speedtest. Il modulo legge /proc/locks e non prende mai il lock, quindi
+# non interferisce con lo speedtest. Deve coincidere con [Speedtest] lock_file.
+# Stringa vuota per disattivare. Se omesso: PLATFORM_MONITOR_STORE_DIR/speedtest.lock.
+#speedtest_lock_file = /var/lib/platform-monitor/speedtest.lock
+
+# Registro dei blackout conclusi, conservato tra i riavvii. Lo stato pubblicato
+# è sempre derivato da qui: se MQTT non è raggiungibile durante un blackout, gli
+# eventi vengono pubblicati al ciclo successivo. Stringa vuota per disattivarlo.
+# Se omesso: PLATFORM_MONITOR_STORE_DIR/dns_monitor.json.
+#state_file = /var/lib/platform-monitor/dns_monitor.json
+
+
+# ---------------------------------------------------------------------------
+[DnsMonitor probes]
+# ---------------------------------------------------------------------------
+#
+# Formato:  nome = tipo,destinazione,livello
+#
+#   tipo          icmp  ip                  echo request IPv4
+#                 tcp   ip:porta            connessione TCP
+#                 dns   ip[:porta]          query A via UDP (porta 53 se omessa)
+#                       IPv6 con parentesi: [2001:db8::1]:853
+#   livello       gateway | wan | dot_upstream | unbound | adguard
+#                 Dal più basso al più alto della catena: failed_layer riporta
+#                 il livello più basso in cui tutte le sonde sono giù.
+#
+# Solo indirizzi IP: i nomi DNS non sono ammessi. Il nome della riga diventa la
+# chiave nel JSON (lettere, cifre, _ e -). Per disabilitare una sonda basta
+# commentare la riga. Esempio per una catena AdGuard (porta 53) davanti a
+# Unbound (porta 5353) con DoT verso Cloudflare, da adattare alla propria rete:
+
+#gateway        = icmp,192.168.1.1,gateway
+#wan_cloudflare = icmp,1.1.1.1,wan
+#wan_quad9      = icmp,9.9.9.9,wan
+#wan_google     = icmp,8.8.8.8,wan
+#dns_public     = dns,1.1.1.1:53,wan
+#dot_upstream   = tcp,1.1.1.1:853,dot_upstream
+#unbound        = dns,192.168.1.1:5353,unbound
+#adguard        = dns,192.168.1.1:53,adguard
 
 
 # ---------------------------------------------------------------------------

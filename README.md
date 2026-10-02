@@ -13,6 +13,7 @@ automaticamente se il tool non è installato.
 
 - Python 3.10+
 - `paho-mqtt` 2.x (installato tramite `requirements.txt`)
+- `dnspython` (installato tramite `requirements.txt`; usato dal modulo `dns_mon`)
 - Broker MQTT raggiungibile (Mosquitto, EMQX, HiveMQ, ecc.)
 - `pip` e `venv` (inclusi nella maggior parte delle distribuzioni)
 
@@ -22,46 +23,61 @@ Dipendenze Python: vedi `requirements.txt`.
 
 ## Installazione
 
-### 1 — Clona il repository
+Il codice di progetto non viene mai modificato: tutto ciò che è personale
+(configurazione, credenziali, virtualenv) vive in `/etc/platform-monitor/`.
+
+| Percorso | Contenuto |
+|---|---|
+| `/opt/platform-monitor-2-mqtt/` | Codice, sostituito a ogni installazione |
+| `/etc/platform-monitor/monitor.ini` | Configurazione (creata da `monitor.dist`, mai sovrascritta) |
+| `/etc/platform-monitor/env` | Variabili d'ambiente opzionali (`EnvironmentFile`) |
+| `/etc/platform-monitor/credentials/` | Credenziali MQTT cifrate con `systemd-creds` |
+| `/etc/platform-monitor/venv/` | Virtualenv Python |
+| `/etc/systemd/system/p-monitor-2-mqtt.service` | Unit del progetto |
+| `/etc/systemd/system/p-monitor-2-mqtt.service.d/10-installer.conf` | Override generato (non modificare) |
+| `/etc/systemd/system/p-monitor-2-mqtt.service.d/90-local.conf` | Override personali (mai toccato) |
+| `/var/lib/platform-monitor/` | Stato runtime |
+
+### 1 — Scarica il codice
 
 ```bash
 sudo git clone https://github.com/r-renato/platform-monitor-2-mqtt.git \
-               /opt/platform-monitor-2-mqtt
-cd /opt/platform-monitor-2-mqtt
+               /usr/local/src/platform-monitor-2-mqtt
+cd /usr/local/src/platform-monitor-2-mqtt
 ```
 
-### 2 — Crea un virtualenv e installa le dipendenze
+### 2 — Esegui l'installer
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install --upgrade pip
-.venv/bin/pip install -r requirements.txt
+sudo ./scripts/install.sh
 ```
 
-> **Perché il virtualenv?**
-> Installa le dipendenze in uno spazio isolato senza toccare i pacchetti
-> di sistema. Evita conflitti con altri programmi Python sulla macchina
-> e rende semplice aggiornare o rimuovere le dipendenze del daemon.
+Lo script, idempotente, controlla i prerequisiti (Python ≥ 3.10, `venv`,
+`systemd-creds`), copia il codice in `/opt`, crea il virtualenv e installa
+`requirements.txt`, crea `monitor.ini` e `env` se mancano, chiede username e
+password MQTT (senza eco) e le cifra, poi installa l'unit e l'override.
+Nulla di ciò che hai già personalizzato viene sovrascritto.
 
-### 3 — Crea il file di configurazione
+Opzioni utili (`./scripts/install.sh --help`):
+
+| Opzione | Effetto |
+|---|---|
+| `--enable-now` | Abilita e avvia (o riavvia) il servizio al termine |
+| `--mqtt-user NOME --password-stdin` | Credenziali non interattive (la password da stdin) |
+| `--reset-credentials` | Ricrea le credenziali cifrate |
+| `--skip-credentials` | Non gestisce le credenziali cifrate |
+| `--skip-pip` | Non installa le dipendenze Python |
+| `--dry-run` | Mostra le azioni senza eseguirle |
+| `--prefix DIR` | Installa sotto `DIR` invece che nella radice (prove) |
+
+### 3 — Personalizza la configurazione e avvia
 
 ```bash
-sudo cp monitor.dist monitor.ini
-sudo nano monitor.ini   # personalizzare hostname broker, topic, intervallo
-```
-
-Il file `monitor.ini` non viene committato (è in `.gitignore`).
-Vedere la sezione [Configurazione](#configurazione) per i dettagli.
-
-### 4 — Installa il servizio systemd
-
-```bash
-sudo ln -s /opt/platform-monitor-2-mqtt/p-monitor-2-mqtt.service \
-           /etc/systemd/system/p-monitor-2-mqtt.service
-
-sudo systemctl daemon-reload
+sudo nano /etc/platform-monitor/monitor.ini   # broker, topic, intervallo, moduli
 sudo systemctl enable --now p-monitor-2-mqtt.service
 ```
+
+Vedere la sezione [Configurazione](#configurazione) per i dettagli.
 
 Verifica:
 
@@ -75,13 +91,24 @@ journalctl -u p-monitor-2-mqtt -f
 ## Aggiornamento
 
 ```bash
-sudo systemctl stop p-monitor-2-mqtt.service
-cd /opt/platform-monitor-2-mqtt
+cd /usr/local/src/platform-monitor-2-mqtt
 sudo git pull
-.venv/bin/pip install -r requirements.txt   # aggiorna dipendenze se cambiate
-sudo systemctl start p-monitor-2-mqtt.service
-systemctl status p-monitor-2-mqtt.service
+sudo ./scripts/install.sh --enable-now   # sostituisce il codice, aggiorna le dipendenze, riavvia
 ```
+
+`monitor.ini`, `env`, le credenziali e `90-local.conf` restano invariati.
+
+---
+
+## Disinstallazione
+
+```bash
+sudo ./scripts/uninstall.sh          # rimuove servizio, codice e virtualenv
+sudo ./scripts/uninstall.sh --purge  # rimuove anche configurazione, credenziali e stato
+```
+
+Senza `--purge` restano `/etc/platform-monitor/` (tranne il virtualenv) e
+`/var/lib/platform-monitor/`.
 
 ---
 
@@ -102,6 +129,8 @@ Sezioni principali:
 | `[MQTT topic]` | `base_topic`, `sensor_name` |
 | `[Daemon]` | `enabled`, `interval_in_minutes` |
 | `[Speedtest]` | Periodicità, worker asincrono, backoff, jitter, binding, cache e lock |
+| `[DnsMonitor]` | Frequenze di campionamento, modalità adattiva, timeout, soglie, domini di prova |
+| `[DnsMonitor probes]` | Sonde `nome = tipo,destinazione,livello` del modulo `dns_mon` |
 | `[Logger sessions]` | Configurazione logging Python standard |
 
 ### Variabili d'ambiente
@@ -116,22 +145,48 @@ Utili per ambienti containerizzati o per evitare credenziali su disco.
 | `MQTT_USERNAME` | `[MQTT] username` | — |
 | `MQTT_PASSWORD` | `[MQTT] password` | — |
 
-### Credenziali sicure con systemd
+### Credenziali MQTT
 
-Per non mettere le credenziali in `monitor.ini`:
+Per non tenere username e password in `monitor.ini` (un file che si
+condivide facilmente per errore), il daemon le cerca in quest'ordine,
+campo per campo:
+
+1. **Credenziali systemd** `mqtt_username` e `mqtt_password`, esposte nella
+   directory `$CREDENTIALS_DIRECTORY` del servizio.
+2. **Variabili d'ambiente** `MQTT_USERNAME` e `MQTT_PASSWORD`.
+3. **`monitor.ini`**, sezione `[MQTT]`, solo come ripiego.
+
+Nel log compare solo la fonte usata, mai il valore.
+
+**Credenziali cifrate (consigliato, systemd ≥ 250).** `scripts/install.sh` le
+crea con `systemd-creds encrypt` in `/etc/platform-monitor/credentials/` e
+genera in `10-installer.conf` le righe `LoadCredentialEncrypted=`. Il file
+cifrato è legato alla chiave dell'host (o al TPM2, se presente): copiato su
+un'altra macchina è inutilizzabile. Il servizio le riceve come file
+temporanei, non come variabili d'ambiente, quindi non compaiono in
+`systemctl show`. Per cambiarle:
 
 ```bash
-sudo install -d -o root -g daemon -m 750 /etc/platform-monitor
-sudo install -o root -g daemon -m 640 /dev/null /etc/platform-monitor/env
-
-printf 'MQTT_USERNAME=myuser\nMQTT_PASSWORD=mysecret\n' | tee /etc/platform-monitor/env > /dev/null
+sudo ./scripts/install.sh --reset-credentials --skip-pip
+sudo systemctl restart p-monitor-2-mqtt.service
 ```
 
-Decommentare in `p-monitor-2-mqtt.service`:
+**File di environment (alternativa o ripiego).** L'override carica sempre
+`EnvironmentFile=-/etc/platform-monitor/env`, creato vuoto (`640 root:daemon`):
 
-```ini
-EnvironmentFile=/etc/platform-monitor/env
+```bash
+printf 'MQTT_USERNAME=myuser\nMQTT_PASSWORD=mysecret\n' | sudo tee /etc/platform-monitor/env > /dev/null
+sudo systemctl restart p-monitor-2-mqtt.service
 ```
+
+Il segreto resta in chiaro in quel file, ma fuori da `monitor.ini` e leggibile
+solo da root e dal gruppo del servizio.
+
+**Limiti.** Chi è root sull'host può sempre leggere il segreto, perché il
+daemon deve poterlo usare. Senza TPM2 la chiave dell'host si trova in
+`/var/lib/systemd/credential.secret`: la cifratura protegge dalla copia del
+file, non da un attaccante con privilegi di root. Se una password è stata
+condivisa in chiaro, va cambiata sul broker.
 
 ---
 
@@ -371,6 +426,155 @@ daemon, `--test` e `--dry-run`.
 
 ---
 
+## Monitor di rete e DNS opzionale
+
+Il collector `dns_mon` serve a capire **dove** si interrompe la catena
+`client → AdGuard → Unbound → (DoT) → WAN` quando "il DNS non va": un
+problema di rete, del canale verso l'upstream, di Unbound o di AdGuard
+sembrano identici dal client. Richiede `dnspython` (già in `requirements.txt`).
+
+Come per lo Speedtest, `collect()` restituisce subito: le misure sono fatte da
+un thread di pianificazione con un piccolo pool di worker, alle frequenze
+configurate e indipendentemente dal ciclo del daemon, che pubblica l'ultimo
+stato aggregato. Le sonde non lanciano processi esterni e usano solo indirizzi
+IP, mai nomi, per non dipendere dal DNS che misurano.
+
+```ini
+[Modules]
+dns_monitor = dns_mon,DnsMon
+
+[DnsMonitor probes]
+# nome = tipo,destinazione,livello
+gateway        = icmp,192.168.1.1,gateway
+wan_cloudflare = icmp,1.1.1.1,wan
+wan_quad9      = icmp,9.9.9.9,wan
+dns_public     = dns,1.1.1.1:53,wan
+dot_upstream   = tcp,1.1.1.1:853,dot_upstream
+unbound        = dns,192.168.1.1:5353,unbound
+adguard        = dns,192.168.1.1:53,adguard
+```
+
+Tutte le opzioni (frequenze, timeout, soglie, domini di prova) sono documentate
+in `monitor.dist`, sezioni `[DnsMonitor]` e `[DnsMonitor probes]`.
+
+**Sonde.** `icmp` (echo IPv4), `tcp` (connessione a `ip:porta`) e `dns` (query
+UDP verso `ip[:porta]`, senza resolver di sistema). Una risposta `NOERROR` o
+`NXDOMAIN` conta come valida; `SERVFAIL`, `REFUSED` e timeout no. Sulle sonde
+`dns` del livello `unbound` viene eseguita anche una query su un nome casuale
+(`cache_miss_latency_ms`), che non può essere in cache e attraversa tutta la
+catena: molti guasti intermittenti emergono solo lì.
+
+**Livelli e attribuzione.** Ogni sonda appartiene a un livello, dal più basso
+al più alto: `gateway`, `wan`, `dot_upstream`, `unbound`, `adguard`.
+`failed_layer` è il livello più basso in cui **tutte** le sonde sono giù
+(almeno `failures_before_down` fallimenti consecutivi): se cade un solo peer
+pubblico il livello `wan` non è guasto e lo stato è `degraded`, con la sonda in
+`degraded_probes`. Stati: `ok`, `degraded`, `down` (`unknown` finché non c'è
+alcun esito).
+
+**Blackout.** Un livello guasto per almeno `blackout_threshold_seconds`
+(default 60) è un blackout; le interruzioni più brevi sono contate in
+`short_outages_24h`. L'inizio è l'istante in cui l'ultima sonda del livello ha
+iniziato a fallire, la fine è confermata da una breve stabilità, così
+un'unica interruzione non si spezza in più eventi. I blackout conclusi sono
+salvati in `state_file` e sopravvivono ai riavvii; lo stato pubblicato è
+sempre derivato da quel registro, quindi un'interruzione di MQTT non fa perdere
+eventi. Un blackout ancora in corso al riavvio del servizio non viene
+recuperato.
+
+**Speedtest.** Lo Speedtest satura la WAN e può causare perdite e timeout. Il
+modulo rileva se è in corso leggendo `/proc/locks` (non prende mai il lock di
+`speedtest_mon`, quindi non può farlo fallire) ed espone `speedtest_running`;
+i blackout avvenuti durante un test, o nei due minuti precedenti, hanno
+`during_speedtest: true`.
+
+**Campionamento adattivo.** A riposo il carico è minimo (rete ogni 10 s, DNS
+ogni 30 s, cache-miss ogni 5 minuti). Quando una sonda fallisce le misure si
+infittiscono (ogni 3 s) fino al ripristino, per datare con precisione il
+guasto, ma al massimo per `adaptive_max_minutes`: un guasto permanente non
+mantiene il ritmo veloce per sempre.
+
+**Privilegi ICMP.** Viene usato un socket "ping" non privilegiato, che funziona
+se `net.ipv4.ping_group_range` include il gruppo del servizio (default di
+Debian/Proxmox), oppure un socket raw (CAP_NET_RAW, ad esempio con il servizio
+eseguito come root). Se nessuno dei due è disponibile le sonde `icmp` ripiegano
+su connessioni TCP/53 e il JSON le riporta come `tcp_fallback`.
+
+Esempio di payload (estratto; `probes` contiene una voce per sonda):
+
+```json
+"dns_monitor": {
+  "status": "ok",
+  "failed_layer": null,
+  "degraded_probes": [],
+  "speedtest_running": false,
+  "last_probe": "2026-09-21T16:21:40+02:00",
+  "window_minutes": 15,
+  "probes": {
+    "unbound": {
+      "type": "dns",
+      "target": "192.168.1.1:5353",
+      "layer": "unbound",
+      "state": "up",
+      "ok": true,
+      "consecutive_failures": 0,
+      "success_pct": 100.0,
+      "latency_ms_p50": 1.2,
+      "latency_ms_p95": 28.4,
+      "rcode": "NOERROR",
+      "cache_miss_ok": true,
+      "cache_miss_latency_ms": 31.0
+    }
+  },
+  "blackouts": {
+    "in_progress": false,
+    "count_24h": 1,
+    "total_seconds_24h": 420,
+    "short_outages_24h": 0,
+    "last": {
+      "start": "2026-09-21T16:13:50+02:00",
+      "end": "2026-09-21T16:20:50+02:00",
+      "duration_seconds": 420,
+      "failed_layer": "wan",
+      "during_speedtest": true
+    }
+  }
+}
+```
+
+Durante un blackout confermato `blackouts` contiene anche `current_start`,
+`current_seconds`, `current_layer` e `current_during_speedtest`. Le sonde icmp
+espongono `rtt_ms_p50/p95`, le altre `latency_ms_p50/p95`; una sonda in errore
+riporta anche `error` (`timeout`, `servfail`, `refused`, `enetunreach`, …).
+
+Esempio di sensori Home Assistant, con `base_topic = sensors/machines` e
+`sensor_name = pmx-{hostname}` (host `ppve`); da adattare ai propri topic:
+
+```yaml
+mqtt:
+  sensor:
+    - name: "Rete/DNS stato"
+      state_topic: "sensors/machines/pmx-ppve/values"
+      value_template: "{{ value_json.dns_monitor.status }}"
+      json_attributes_topic: "sensors/machines/pmx-ppve/values"
+      json_attributes_template: >-
+        {{ {'failed_layer': value_json.dns_monitor.failed_layer,
+            'blackouts_24h': value_json.dns_monitor.blackouts.count_24h} | tojson }}
+      availability_topic: "sensors/machines/pmx-ppve/availability"
+  binary_sensor:
+    - name: "Blackout di rete in corso"
+      state_topic: "sensors/machines/pmx-ppve/values"
+      value_template: "{{ value_json.dns_monitor.blackouts.in_progress }}"
+      payload_on: "True"
+      payload_off: "False"
+      availability_topic: "sensors/machines/pmx-ppve/availability"
+```
+
+Le notifiche conviene basarle su `status == down` (richiede più fallimenti
+consecutivi) e non su `degraded`, che può comparire per una singola sonda.
+
+---
+
 ## Architettura
 
 ```
@@ -382,10 +586,16 @@ mods/
   docker_mon.py              — container e immagini Docker
   keepalived_mon.py          — stato daemon keepalived
   speedtest_mon.py           — prestazioni Internet via Speedtest CLI Ookla
-tests/
-  test_monitor.py            — test ciclo MQTT, reconnect, publish e shutdown
+  dns_mon.py                 — sonde ICMP/TCP/DNS, livello guasto e blackout
+scripts/
+  install.sh                 — installa/aggiorna il servizio (codice in /opt, config in /etc)
+  uninstall.sh               — rimuove il servizio (--purge elimina anche la config)
+  unittest.sh                — controlli automatici (sintassi, template, script, test)
+test/
+  test_monitor.py            — test ciclo MQTT, reconnect, publish, shutdown e credenziali
   test_speedtest_mon.py      — test worker, scheduling, backoff, lock e cache
-monitor.dist                 — template di configurazione (copiare in monitor.ini)
+  test_dns_mon.py            — test sonde, attribuzione dei livelli, blackout, stato
+monitor.dist                 — template di configurazione (install.sh lo copia in monitor.ini)
 requirements.txt             — dipendenze Python
 p-monitor-2-mqtt.service     — unit systemd con hardening
 ```
@@ -395,18 +605,3 @@ p-monitor-2-mqtt.service     — unit systemd con hardening
 ## Licenza
 
 MIT — vedi `LICENSE`.
-
-
-sudo git clone https://github.com/r-renato/platform-monitor-2-mqtt.git /opt/platform-monitor-2-mqtt
-
-cd /opt/platform-monitor-2-mqtt
-sudo pip3 install -r requirements.txt
-
-
-sudo cp /opt/platform-monitor-2-mqtt/monitor.{ini.dist,ini}
-
-
-sudo ln -s /opt/platform-monitor-2-mqtt/p-monitor-2-mqtt.service /etc/systemd/system/p-monitor-2-mqtt.service
-
-sudo systemctl daemon-reload
-sudo systemctl enable p-monitor-2-mqtt.service

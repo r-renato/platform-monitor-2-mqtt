@@ -1,10 +1,16 @@
 # p-monitor-2-mqtt.service — Systemd unit per platform-monitor-2-mqtt
 #
-# Installazione:
-#   sudo ln -s /opt/platform-monitor-2-mqtt/p-monitor-2-mqtt.service \
-#              /etc/systemd/system/p-monitor-2-mqtt.service
-#   sudo systemctl daemon-reload
+# Installazione (consigliata):
+#   sudo ./scripts/install.sh
 #   sudo systemctl enable --now p-monitor-2-mqtt.service
+#
+# Lo script copia questa unit in /etc/systemd/system/ e genera l'override
+# /etc/systemd/system/p-monitor-2-mqtt.service.d/10-installer.conf con
+# EnvironmentFile= e LoadCredentialEncrypted=: questo file non va modificato.
+# Le personalizzazioni vanno in 90-local.conf, nella stessa directory.
+#
+# Layout: codice in /opt/platform-monitor-2-mqtt, configurazione, virtualenv e
+# credenziali in /etc/platform-monitor.
 #
 # Aggiornamento configurazione:
 #   sudo systemctl reload-or-restart p-monitor-2-mqtt.service
@@ -47,20 +53,25 @@ Group=daemon
 # ---------------------------------------------------------------------------
 WorkingDirectory=/opt/platform-monitor-2-mqtt
 
-# Virtualenv consigliato. Se si usa il Python di sistema, sostituire con:
-#   ExecStart=/usr/bin/python3 -u /opt/platform-monitor-2-mqtt/platform_monitor_2_mqtt.py
-ExecStart=/opt/platform-monitor-2-mqtt/.venv/bin/python \
+# Virtualenv creato da scripts/install.sh in /etc/platform-monitor/venv.
+# Per usare il Python di sistema, creare 90-local.conf con:
+#   [Service]
+#   ExecStart=
+#   ExecStart=/usr/bin/python3 -u /opt/platform-monitor-2-mqtt/platform_monitor_2_mqtt.py --config_dir /etc/platform-monitor
+ExecStart=/etc/platform-monitor/venv/bin/python \
           -u \
           /opt/platform-monitor-2-mqtt/platform_monitor_2_mqtt.py \
           --config_dir \
           /etc/platform-monitor
 
-# Le credenziali MQTT non vanno in monitor.ini (file su disco, potenzialmente
-# leggibile). Usare un file di environment separato con permessi restrittivi:
-#   sudo install -o root -g daemon -m 640 /dev/null /etc/platform-monitor/env
-#   echo "MQTT_USERNAME=user"    | sudo tee -a /etc/platform-monitor/env
-#   echo "MQTT_PASSWORD=secret"  | sudo tee -a /etc/platform-monitor/env
-#EnvironmentFile=/etc/platform-monitor/env
+# Le credenziali MQTT non vanno in monitor.ini (file facile da condividere
+# per errore). Il daemon le cerca in quest'ordine:
+#   1. credenziali systemd cifrate (mqtt_username, mqtt_password), caricate da
+#      LoadCredentialEncrypted= nell'override generato da install.sh;
+#   2. variabili MQTT_USERNAME / MQTT_PASSWORD, ad esempio da
+#      EnvironmentFile=-/etc/platform-monitor/env (anch'esso nell'override);
+#   3. monitor.ini, solo come ripiego.
+# Vedere la sezione "Credenziali MQTT" del README.
 
 Environment=PYTHONUNBUFFERED=1
 
@@ -143,7 +154,13 @@ PrivateTmp=true
 # PrivateNetwork=false  ← default, non cambiare
 
 # Capabilities: il processo non ha bisogno di nessuna capability speciale.
-# CAP_NET_RAW sarebbe necessaria solo per ICMP ping — non usato qui.
+# Il modulo dns_mon invia echo ICMP con un socket "ping" non privilegiato, che
+# funziona se net.ipv4.ping_group_range include il gruppo del servizio (default
+# di Debian/Proxmox: "0 2147483647"). Se non è così e il servizio non gira come
+# root, sostituire le due righe seguenti con:
+#   CapabilityBoundingSet=CAP_NET_RAW
+#   AmbientCapabilities=CAP_NET_RAW
+# In assenza di ICMP, dns_mon ripiega su connessioni TCP/53.
 CapabilityBoundingSet=
 AmbientCapabilities=
 

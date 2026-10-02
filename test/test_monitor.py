@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
+import tempfile
 import types
 import unittest
 from configparser import ConfigParser
+from pathlib import Path
 from threading import Event
 from unittest.mock import patch
 
@@ -301,6 +304,112 @@ class MonitorTests(unittest.TestCase):
         with patch.object(monitor, "execute") as execute:
             monitor.run()
         execute.assert_called_once_with()
+
+
+class CredentialTests(unittest.TestCase):
+    """Precedenza: credenziale systemd → variabili d'ambiente → monitor.ini."""
+
+    ENV_KEYS = ("CREDENTIALS_DIRECTORY", "MQTT_USERNAME", "MQTT_PASSWORD")
+
+    def setUp(self):
+        app.config = build_config()
+        app.logger = logging.getLogger("platformMonitor.tests")
+        app.logger.handlers.clear()
+        app.logger.addHandler(logging.NullHandler())
+        self.client_patch = patch.object(app.mqtt, "Client", side_effect=FakeClient)
+        self.client_patch.start()
+        self.addCleanup(self.client_patch.stop)
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cred_dir = Path(self.tmp.name)
+
+        saved = {key: os.environ.pop(key, None) for key in self.ENV_KEYS}
+
+        def restore():
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.addCleanup(restore)
+
+    def write_credential(self, name, value):
+        (self.cred_dir / name).write_text(value, encoding="utf-8")
+        os.environ["CREDENTIALS_DIRECTORY"] = str(self.cred_dir)
+
+    def credentials(self):
+        return getattr(app.Monitor2MQTT(Event())._client, "credentials", None)
+
+    def test_ini_is_used_when_nothing_else_is_available(self):
+        app.config["MQTT"]["username"] = "ini-user"
+        app.config["MQTT"]["password"] = "ini-pass"
+        self.assertEqual(self.credentials(), ("ini-user", "ini-pass"))
+
+    def test_environment_overrides_ini(self):
+        app.config["MQTT"]["username"] = "ini-user"
+        app.config["MQTT"]["password"] = "ini-pass"
+        os.environ["MQTT_USERNAME"] = "env-user"
+        os.environ["MQTT_PASSWORD"] = "env-pass"
+        self.assertEqual(self.credentials(), ("env-user", "env-pass"))
+
+    def test_systemd_credential_overrides_environment_and_ini(self):
+        app.config["MQTT"]["username"] = "ini-user"
+        app.config["MQTT"]["password"] = "ini-pass"
+        os.environ["MQTT_USERNAME"] = "env-user"
+        os.environ["MQTT_PASSWORD"] = "env-pass"
+        self.write_credential("mqtt_username", "cred-user")
+        self.write_credential("mqtt_password", "cred-pass")
+        self.assertEqual(self.credentials(), ("cred-user", "cred-pass"))
+
+    def test_precedence_is_evaluated_per_field(self):
+        app.config["MQTT"]["username"] = "ini-user"
+        app.config["MQTT"]["password"] = "ini-pass"
+        os.environ["MQTT_PASSWORD"] = "env-pass"
+        self.write_credential("mqtt_username", "cred-user")
+        self.assertEqual(self.credentials(), ("cred-user", "env-pass"))
+
+    def test_missing_credential_falls_back_to_environment(self):
+        os.environ["CREDENTIALS_DIRECTORY"] = str(self.cred_dir)
+        os.environ["MQTT_USERNAME"] = "env-user"
+        os.environ["MQTT_PASSWORD"] = "env-pass"
+        self.assertEqual(self.credentials(), ("env-user", "env-pass"))
+
+    def test_empty_credential_falls_back(self):
+        self.write_credential("mqtt_username", "")
+        self.write_credential("mqtt_password", "\n")
+        os.environ["MQTT_USERNAME"] = "env-user"
+        os.environ["MQTT_PASSWORD"] = "env-pass"
+        self.assertEqual(self.credentials(), ("env-user", "env-pass"))
+
+    def test_only_final_newline_is_stripped(self):
+        self.write_credential("mqtt_username", "user")
+        self.write_credential("mqtt_password", "  pa ss#=\"$x  \r\n")
+        self.assertEqual(self.credentials(), ("user", "  pa ss#=\"$x  "))
+
+    def test_no_credentials_anywhere_means_anonymous_connection(self):
+        self.assertIsNone(self.credentials())
+
+    def test_unreadable_credential_directory_falls_back(self):
+        os.environ["CREDENTIALS_DIRECTORY"] = str(self.cred_dir / "inesistente")
+        os.environ["MQTT_USERNAME"] = "env-user"
+        self.assertEqual(self.credentials(), ("env-user", None))
+
+    def test_invalid_credential_names_are_rejected(self):
+        os.environ["CREDENTIALS_DIRECTORY"] = str(self.cred_dir)
+        for name in ("../x", "a/b", ".hidden", ""):
+            self.assertIsNone(app._read_systemd_credential(name))
+
+    def test_secret_values_are_never_logged(self):
+        self.write_credential("mqtt_username", "cred-user")
+        self.write_credential("mqtt_password", "super-secret-value")
+        with self.assertLogs(app.logger, level="INFO") as captured:
+            self.credentials()
+        output = "\n".join(captured.output)
+        self.assertNotIn("super-secret-value", output)
+        self.assertNotIn("cred-user", output)
+        self.assertIn("systemd-credential", output)
 
 
 if __name__ == "__main__":
