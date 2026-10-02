@@ -58,6 +58,11 @@ Lo script, idempotente, controlla i prerequisiti (Python ≥ 3.10, `venv`,
 password MQTT (senza eco) e le cifra, poi installa l'unit e l'override.
 Nulla di ciò che hai già personalizzato viene sovrascritto.
 
+Il virtualenv usa `/usr/bin/python3` (modificabile con `PYTHON_BIN=...`). Un
+interprete sotto `/root` o `/home`, come quelli di pyenv o uv, viene rifiutato:
+il servizio gira con `ProtectHome=true` e non potrebbe avviarlo (errore
+`203/EXEC`). Un virtualenv esistente con questo problema viene ricreato.
+
 Opzioni utili (`./scripts/install.sh --help`):
 
 | Opzione | Effetto |

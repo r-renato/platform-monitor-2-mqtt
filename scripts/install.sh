@@ -36,7 +36,16 @@ SERVICE_NAME="p-monitor-2-mqtt"
 SERVICE_GROUP="daemon"
 
 PREFIX=""
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+# Il servizio gira con ProtectHome=true: l'interprete del virtualenv non può
+# stare sotto /root o /home (pyenv, uv, ecc.). Per default si usa quello di
+# sistema, non il primo "python3" del PATH.
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+    if [[ -x /usr/bin/python3 ]]; then
+        PYTHON_BIN=/usr/bin/python3
+    else
+        PYTHON_BIN=python3
+    fi
+fi
 DRY_RUN=0
 ENABLE_NOW=0
 SKIP_PIP=0
@@ -75,7 +84,9 @@ Opzioni:
   -h, --help             mostra questo aiuto
 
 Variabili d'ambiente:
-  PYTHON_BIN=/path/python   interprete per creare il virtualenv (≥ 3.10)
+  PYTHON_BIN=/path/python   interprete per creare il virtualenv (≥ 3.10);
+                            default /usr/bin/python3. Non può stare in /root
+                            o /home: il servizio non lo vedrebbe.
   NO_COLOR=1                disabilita i colori
 
 La password non va mai passata come argomento: viene richiesta senza eco
@@ -164,6 +175,22 @@ import sys
 raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
 PY
 info "Python: $("${PYTHON_BIN}" --version 2>&1)"
+
+# Vero percorso di un eseguibile, seguendo i link simbolici.
+real_path() { readlink -f "$(command -v "$1" 2>/dev/null || echo "$1")" 2>/dev/null || true; }
+
+# L'unit usa ProtectHome=true: un interprete sotto /root o /home è invisibile
+# al servizio, che fallirebbe con status 203/EXEC.
+in_home() {
+    case "$(real_path "$1")" in
+        /root/*|/home/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+if in_home "${PYTHON_BIN}"; then
+    fail "L'interprete $(real_path "${PYTHON_BIN}") sta nella home: il servizio (ProtectHome=true) non potrebbe avviarlo. Usare PYTHON_BIN=/usr/bin/python3."
+fi
 
 if ! "${PYTHON_BIN}" -c 'import venv, ensurepip' >/dev/null 2>&1; then
     fail "Modulo venv/ensurepip assente. Su Debian/Proxmox: apt install python3-venv"
@@ -262,10 +289,22 @@ ok "Configurazione pronta"
 
 step "Virtualenv in ${VENV_DIR}"
 
-if [[ -x "${VENV_DIR}/bin/python" ]]; then
-    info "Virtualenv esistente: riutilizzato."
-else
+if [[ -e "${VENV_DIR}" || -L "${VENV_DIR}/bin/python" ]]; then
+    if [[ -x "${VENV_DIR}/bin/python" ]] && ! in_home "${VENV_DIR}/bin/python"; then
+        info "Virtualenv esistente: riutilizzato."
+    else
+        warn "Virtualenv esistente non utilizzabile dal servizio (interprete mancante o nella home): viene ricreato."
+        run rm -rf "${VENV_DIR}"
+    fi
+fi
+if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
     run "${PYTHON_BIN}" -m venv "${VENV_DIR}"
+fi
+if (( ! DRY_RUN )); then
+    [[ -x "${VENV_DIR}/bin/python" ]] || fail "Creazione del virtualenv non riuscita."
+    if in_home "${VENV_DIR}/bin/python"; then
+        fail "Il virtualenv punta a $(real_path "${VENV_DIR}/bin/python"), nella home: il servizio non potrebbe avviarlo."
+    fi
 fi
 
 if (( SKIP_PIP )); then
